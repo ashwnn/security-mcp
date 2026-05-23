@@ -92,13 +92,25 @@ async fn main() -> anyhow::Result<()> {
         .layer(CompressionLayer::new())
         .layer(RequestBodyLimitLayer::new(config.max_request_body_bytes))
         .layer(
-            TraceLayer::new_for_http().make_span_with(|request: &http::Request<_>| {
-                tracing::info_span!(
-                    "http_request",
-                    method = %request.method(),
-                    path = %request.uri().path()
-                )
-            }),
+            TraceLayer::new_for_http()
+                .on_request(|request: &http::Request<_>, _span: &tracing::Span| {
+                    tracing::info!(
+                        method = %request.method(),
+                        uri = %redacted_path_and_query(request.uri()),
+                        "request started"
+                    );
+                })
+                .on_response(
+                    |response: &http::Response<_>,
+                     latency: std::time::Duration,
+                     _span: &tracing::Span| {
+                        tracing::info!(
+                            status = %response.status(),
+                            latency_ms = latency.as_millis(),
+                            "request completed"
+                        );
+                    },
+                ),
         )
         .layer(security_headers);
 
@@ -125,4 +137,27 @@ async fn main() -> anyhow::Result<()> {
     .await
     .context("server failed")?;
     Ok(())
+}
+
+fn redacted_path_and_query(uri: &http::Uri) -> String {
+    let path = uri.path();
+    let Some(query) = uri.query() else {
+        return path.to_string();
+    };
+    let redacted = url::form_urlencoded::parse(query.as_bytes())
+        .map(|(k, v)| {
+            let key = k.to_string();
+            let sensitive = matches!(
+                key.as_str(),
+                "api_key" | "token" | "access_token" | "code" | "connector_token"
+            );
+            if sensitive {
+                format!("{key}=<redacted>")
+            } else {
+                format!("{}={}", key, v)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("&");
+    format!("{path}?{redacted}")
 }

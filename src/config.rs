@@ -354,7 +354,12 @@ fn parse_scopes(env_var: &str, defaults: &[&str]) -> Vec<String> {
     let raw = std::env::var(env_var)
         .ok()
         .unwrap_or_else(|| defaults.join(" "));
-    let mut scopes = raw
+    let normalized = raw
+        .replace(',', " ")
+        .trim_matches('"')
+        .trim_matches('\'')
+        .to_string();
+    let mut scopes = normalized
         .split_whitespace()
         .map(str::trim)
         .filter(|v| !v.is_empty())

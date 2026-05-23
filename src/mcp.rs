@@ -81,6 +81,13 @@ async fn handle_mcp(
         return rpc_error(request.id, -32600, "invalid jsonrpc version");
     }
 
+    tracing::info!(
+        mcp_method = %request.method,
+        auth_method = %identity.method,
+        auth_subject = %identity.subject,
+        "mcp request"
+    );
+
     let rate_key = format!(
         "mcp:{}:{}:{}",
         identity.subject, identity.method, request.method
@@ -121,6 +128,7 @@ async fn dispatch(
             "protocolVersion": "2025-03-26",
         })),
         "tools/list" | "mcp.list_tools" => {
+            require_scope(auth, "mcp:read")?;
             let tools = state
                 .registry
                 .high_level_tools()
@@ -130,6 +138,7 @@ async fn dispatch(
             Ok(serde_json::json!({ "tools": tools }))
         }
         "tools/call" | "mcp.call_tool" => {
+            require_scope(auth, "mcp:tools")?;
             let tool_name = params["name"]
                 .as_str()
                 .ok_or_else(|| anyhow::anyhow!("missing tool name"))?;
@@ -140,12 +149,25 @@ async fn dispatch(
     }
 }
 
+fn require_scope(auth: &AuthIdentity, scope: &str) -> anyhow::Result<()> {
+    if auth.scopes.iter().any(|granted| granted == scope) {
+        return Ok(());
+    }
+    Err(anyhow::anyhow!("insufficient scope: {scope} required"))
+}
+
 async fn call_tool(
     state: &AppState,
     auth: &AuthIdentity,
     tool_name: &str,
     args: Value,
 ) -> anyhow::Result<Value> {
+    tracing::info!(
+        tool = %tool_name,
+        auth_method = %auth.method,
+        auth_subject = %auth.subject,
+        "mcp tool call"
+    );
     match tool_name {
         "security_investigate" => {
             let input: InvestigationInput = serde_json::from_value(args)?;
@@ -282,7 +304,8 @@ mod tests {
         unsafe {
             std::env::set_var("SECURITY_MCP_OAUTH_ENABLED", "false");
         }
-        let mut config = crate::config::Config::from_sources(Cli::parse_from(["app"])).expect("cfg");
+        let mut config =
+            crate::config::Config::from_sources(Cli::parse_from(["app"])).expect("cfg");
         config.public_base_url = url::Url::parse("https://mcp.example.com").expect("url");
         let mut headers = HeaderMap::new();
         headers.insert(

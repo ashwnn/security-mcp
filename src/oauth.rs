@@ -330,7 +330,7 @@ async fn post_token(
         return (StatusCode::BAD_REQUEST, err).into_response();
     }
 
-    let code_data = match state.db.oauth_consume_code(&form.code).await {
+    let code_data = match state.db.oauth_get_valid_code(&form.code).await {
         Ok(Some(v)) => v,
         Ok(None) => return (StatusCode::BAD_REQUEST, "invalid or expired code").into_response(),
         Err(err) => {
@@ -393,6 +393,18 @@ async fn post_token(
         };
         if crate::db::hash_secret(&provided) != expected_hash {
             return (StatusCode::UNAUTHORIZED, "invalid client credentials").into_response();
+        }
+    }
+
+    match state.db.oauth_consume_code(&form.code).await {
+        Ok(true) => {}
+        Ok(false) => return (StatusCode::BAD_REQUEST, "invalid or expired code").into_response(),
+        Err(err) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("db error: {err}"),
+            )
+                .into_response();
         }
     }
 
@@ -459,6 +471,16 @@ async fn post_register(
     let auth_method = payload
         .token_endpoint_auth_method
         .unwrap_or_else(|| "none".to_string());
+    if !matches!(
+        auth_method.as_str(),
+        "none" | "client_secret_post" | "client_secret_basic"
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            "unsupported token_endpoint_auth_method",
+        )
+            .into_response();
+    }
 
     let client_secret = if auth_method == "none" {
         None

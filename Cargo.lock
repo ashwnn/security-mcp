@@ -1688,6 +1688,7 @@ dependencies = [
  "chrono",
  "clap",
  "dotenvy",
+ "hex",
  "http",
  "hyper",
  "rand 0.9.4",

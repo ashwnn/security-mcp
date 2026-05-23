@@ -261,7 +261,7 @@ impl Database {
         Ok(())
     }
 
-    pub async fn oauth_consume_code(
+    pub async fn oauth_get_valid_code(
         &self,
         code: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
@@ -281,11 +281,6 @@ impl Database {
             return Ok(None);
         }
 
-        sqlx::query("UPDATE oauth_auth_codes SET consumed = 1 WHERE code_hash = ?")
-            .bind(code_hash)
-            .execute(&self.pool)
-            .await?;
-
         Ok(Some(serde_json::json!({
             "client_id": row.get::<String, _>("client_id"),
             "redirect_uri": row.get::<String, _>("redirect_uri"),
@@ -295,6 +290,17 @@ impl Database {
             "state": row.get::<Option<String>, _>("state"),
             "subject": row.get::<String, _>("subject"),
         })))
+    }
+
+    pub async fn oauth_consume_code(&self, code: &str) -> anyhow::Result<bool> {
+        let result = sqlx::query(
+            "UPDATE oauth_auth_codes SET consumed = 1 WHERE code_hash = ? AND consumed = 0 AND expires_at >= ?",
+        )
+        .bind(hash_secret(code))
+        .bind(Utc::now().to_rfc3339())
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() == 1)
     }
 
     pub async fn oauth_store_access_token(

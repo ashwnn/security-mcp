@@ -235,11 +235,11 @@ fn constant_time_eq(expected: &str, provided: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use clap::Parser;
+    use url::Url;
 
     use super::*;
     use crate::{
-        config::Cli, db::Database, modules::Registry, oauth::SimpleRateLimiter, types::AppState,
+        config::Config, db::Database, modules::Registry, oauth::SimpleRateLimiter, types::AppState,
     };
 
     #[test]
@@ -255,33 +255,54 @@ mod tests {
         assert_eq!(token.as_deref(), Some("x"));
     }
 
-    fn clear_auth_env() {
-        for key in [
-            "SECURITY_MCP_PUBLIC_MODE",
-            "SECURITY_MCP_BIND_ADDR",
-            "SECURITY_MCP_PUBLIC_BASE_URL",
-            "SECURITY_MCP_OAUTH_ENABLED",
-            "SECURITY_MCP_CONNECTOR_TOKEN",
-            "SECURITY_MCP_BEARER_TOKEN",
-            "SECURITY_MCP_BEARER_SCOPES",
-            "SECURITY_MCP_API_KEY",
-            "SECURITY_MCP_API_KEY_SCOPES",
-            "SECURITY_MCP_API_KEY_HEADER",
-            "SECURITY_MCP_API_KEY_QUERY_ENABLED",
-        ] {
-            unsafe { std::env::remove_var(key) };
-        }
-    }
-
     async fn test_state() -> AppState {
-        clear_auth_env();
-        unsafe {
-            std::env::set_var("SECURITY_MCP_OAUTH_ENABLED", "false");
-            std::env::set_var("SECURITY_MCP_BEARER_TOKEN", "bearer-secret");
-            std::env::set_var("SECURITY_MCP_API_KEY", "api-secret");
-            std::env::set_var("SECURITY_MCP_API_KEY_HEADER", "X-API-Key");
-        }
-        let config = crate::config::Config::from_sources(Cli::parse_from(["app"])).expect("cfg");
+        let config = Config {
+            bind_addr: "127.0.0.1:8080".parse().expect("bind addr"),
+            public_base_url: Url::parse("http://127.0.0.1:8080").expect("base url"),
+            oauth_issuer: Url::parse("http://127.0.0.1:8080").expect("issuer"),
+            database_path: ":memory:".to_string(),
+            public_mode: false,
+            bearer_token: Some("bearer-secret".to_string()),
+            bearer_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
+            api_key: Some("api-secret".to_string()),
+            api_key_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
+            api_key_header: "X-API-Key".to_string(),
+            api_key_query_enabled: false,
+            api_key_query_name: "api_key".to_string(),
+            connector_token: None,
+            oauth_enabled: false,
+            oauth_allowed_scopes: vec![
+                "mcp:read".to_string(),
+                "mcp:tools".to_string(),
+                "mcp:raw".to_string(),
+                "mcp:admin".to_string(),
+            ],
+            oauth_default_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
+            oauth_require_resource: false,
+            require_registered_oauth_clients: true,
+            access_token_ttl_seconds: 3600,
+            auth_code_ttl_seconds: 300,
+            expert_tool_enabled: false,
+            cache_enabled: true,
+            default_timeout_seconds: 15,
+            max_request_body_bytes: 1024 * 1024,
+            allow_private_targets: false,
+            trust_proxy_headers: false,
+            enforce_mcp_origin: true,
+            auth_rate_limit_per_minute: 120,
+            lookup_rate_limit_per_minute: 120,
+            ui_localhost_only: true,
+            log_level: "info".to_string(),
+            nvd_api_key: None,
+            shodan_api_key: None,
+            greynoise_api_key: None,
+            abuseipdb_api_key: None,
+            virustotal_api_key: None,
+            urlscan_api_key: None,
+            github_token: None,
+            circl_pd_user: None,
+            circl_pd_password: None,
+        };
         let db = Database::connect("sqlite::memory:").await.expect("db");
         db.migrate().await.expect("migrate");
         AppState {
