@@ -41,7 +41,7 @@ pub(super) async fn greynoise_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://api.greynoise.io/v3/community/{ip}"))
+        .get(format!("https://api.greynoise.io/v3/community/{}", urlencoding::encode(ip)))
         .header("key", key)
         .send()
         .await?;
@@ -68,7 +68,7 @@ pub(super) async fn shodan_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://api.shodan.io/shodan/host/{ip}"))
+        .get(format!("https://api.shodan.io/shodan/host/{}", urlencoding::encode(ip)))
         .query(&[("key", key)])
         .send()
         .await?;
@@ -98,7 +98,7 @@ pub(super) async fn circl_pdns_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://www.circl.lu/pdns/query/{indicator}"))
+        .get(format!("https://www.circl.lu/pdns/query/{}", urlencoding::encode(indicator)))
         .basic_auth(user, Some(pass))
         .send()
         .await?;
