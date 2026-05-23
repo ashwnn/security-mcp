@@ -1,100 +1,159 @@
 # Security MCP
 
-Security MCP is a minimal Rust MCP server for security enrichment, passive recon, CVE intelligence, and analyst workflows.
+Security MCP is a Rust MCP server for security enrichment, passive recon, CVE intelligence, exposure context, attack-vector analysis, and defensive decision support.
 
-It helps security analysts understand external exposure, attack vectors, vulnerability context, and defensive control gaps by collecting structured evidence from trusted security sources through a local web UI and MCP-compatible remote server.
+## V1 Features
 
-The goal is simple: reduce manual lookup work, organize evidence, and make security enrichment easier to use from AI clients without exposing a noisy list of raw tools.
+- Remote MCP JSON-RPC endpoint at `/mcp` with a compact high-level tool surface:
+  - `security_investigate`
+  - `security_investigate_cve`
+  - `security_investigate_indicator`
+  - `security_scan_dependencies`
+  - `security_compare`
+  - `security_tool_catalog`
+  - Optional: `security_run_tool` via `SECURITY_MCP_EXPERT_TOOL_ENABLED=true`
+- Registry-first internal module catalog for CVE, exposure, threat, and dependency workflows.
+- SQLite-backed cache and audit log.
+- Server-rendered analyst UI:
+  - `/`
+  - `/tools`
+  - `/sources`
+  - `/cache`
+  - `/audit`
+  - `/settings`
+  - localhost-only by default via `SECURITY_MCP_UI_LOCALHOST_ONLY=true`
+- Security defaults:
+  - loopback bind by default
+  - strict request size limit
+  - rate limits for auth and lookups
+  - basic SSRF/private target checks
+  - secret redaction in config views
+  - security response headers
 
-## Features
+## Authentication Modes
 
-- CVE, EPSS, CVSS, CWE, and CISA KEV enrichment
-- Domain, IP, URL, DNS, TLS, ASN, and passive DNS analysis
-- Public exposure and attack-surface context gathering
-- Package vulnerability checks with OSV and GitHub Advisories
-- Threat intelligence lookups for infrastructure and indicators
-- Local web UI for manual analyst workflows
-- Remote MCP server support for AI clients
-- Bearer token and OAuth-compatible authentication
-- SQLite caching and local audit logs
-- Small single-binary deployment
+The server accepts any configured mode:
 
-## Sources
+- Direct bearer token: `Authorization: Bearer <token>`
+- API key header mode: configurable header, default `X-API-Key`
+- API key query mode: disabled by default, enable with `SECURITY_MCP_API_KEY_QUERY_ENABLED=true`
+- OAuth-compatible token-login facade:
+  - `GET /.well-known/oauth-authorization-server`
+  - `GET /.well-known/openid-configuration`
+  - `GET /.well-known/oauth-protected-resource`
+  - `GET|POST /oauth/authorize`
+  - `POST /oauth/token`
+  - `POST /oauth/register`
 
-The initial version targets integrations with:
+OAuth flow supports authorization code with PKCE S256 and issues short-lived opaque access tokens.
+
+## Sources in V1
 
 - NVD
-- EPSS
+- FIRST EPSS
 - CISA KEV
-- MITRE ATT&CK
-- Shodan
-- GreyNoise
 - AbuseIPDB
+- GreyNoise
+- Shodan
+- CIRCL passive DNS
+- RDAP
+- Cloudflare DNS over HTTPS
+- crt.sh
 - VirusTotal
 - URLScan
-- OSV
-- GitHub Advisories
-- CIRCL Passive DNS
 - MalwareBazaar
 - ThreatFox
+- Ransomwhere
+- OSV
+- GitHub advisories search
 
-## Use Cases
+Missing API keys are returned as explicit source status instead of fake success.
 
-Security MCP is intended for workflows such as:
+## Quick Start
 
-- Enriching CVEs before prioritizing patching or mitigation
-- Checking whether vulnerabilities appear in CISA KEV
-- Reviewing EPSS, CVSS, CWE, exploit, and attack-technique context
-- Mapping externally visible domains, subdomains, services, and infrastructure
-- Understanding likely attack vectors against exposed assets
-- Gathering evidence to support firewall, WAF, DNS, endpoint, and access-control policies
-- Reviewing package and dependency risk across software projects
-- Correlating security intelligence into analyst-reviewed findings
-- Giving AI clients a safer, smaller set of security investigation tools
+1. Copy `.env.example` to `.env`
+2. Set at least one auth mode:
+   - `SECURITY_MCP_BEARER_TOKEN`, or
+   - `SECURITY_MCP_API_KEY`, or
+   - OAuth with `SECURITY_MCP_OAUTH_ENABLED=true` and `SECURITY_MCP_CONNECTOR_TOKEN`
+3. Run:
 
-## Design
+```bash
+cargo run
+```
 
-Security MCP is built around a small model-facing MCP interface and a broader internal tool registry.
+Open [http://127.0.0.1:8080/](http://127.0.0.1:8080/) for UI.
 
-AI clients should not need to see every low-level source tool. Instead, they can call higher-level investigation tools that route to the right enrichment modules and return structured results.
+## First-Use Workflow
 
-The local web UI exposes more manual control for analysts who want to inspect sources, review raw evidence, and run specific lookups.
+1. Pick one auth mode for initial client onboarding.
+2. Validate auth and tool discovery.
+3. Add source API keys incrementally and confirm source status on `/sources`.
 
-## Deployment
+### Bearer mode first use
 
-Security MCP is designed to run as a small Rust binary with minimal operational overhead.
+1. Set `SECURITY_MCP_BEARER_TOKEN`.
+2. Call MCP:
 
-Supported deployment targets include:
+```bash
+curl -s http://127.0.0.1:8080/mcp \
+  -H "Authorization: Bearer change-me" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
 
-- Local analyst workstation
-- Small VPS
-- Internal security tooling server
-- Cloudflare-proxied HTTPS endpoint
+### API key mode first use
 
-SQLite is used for local caching and audit logs.
+1. Set `SECURITY_MCP_API_KEY`.
+2. Call MCP:
 
-## Authentication
+```bash
+curl -s http://127.0.0.1:8080/mcp \
+  -H "X-API-Key: change-me" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
 
-Security MCP supports:
+### OAuth facade first use
 
-- Static bearer tokens
-- API key-style authentication
-- OAuth-compatible flows for MCP clients that require OAuth
+1. Set `SECURITY_MCP_OAUTH_ENABLED=true` and `SECURITY_MCP_CONNECTOR_TOKEN`.
+2. Register a client at `POST /oauth/register`.
+3. Run authorization code + PKCE with `resource=<public_base_url>/mcp`.
+4. Exchange code at `POST /oauth/token`.
+5. Use returned bearer access token on `/mcp`.
 
-This allows the same server to work with different MCP clients and connector platforms without requiring every deployment to manage a full external identity provider.
+## API Keys and Source Setup
 
-## Scope
+Set only keys for sources you use. Missing keys are reported as `not_configured` in source status.
 
-Security MCP is not a vulnerability scanner, exploitation framework, ticketing system, or replacement for analyst judgment.
+- `NVD_API_KEY` for NVD
+- `SHODAN_API_KEY` for Shodan
+- `GREYNOISE_API_KEY` for GreyNoise
+- `ABUSEIPDB_API_KEY` for AbuseIPDB
+- `VIRUSTOTAL_API_KEY` for VirusTotal
+- `URLSCAN_API_KEY` for URLScan
+- `GITHUB_TOKEN` for GitHub advisories
+- `CIRCL_PD_USER` and `CIRCL_PD_PASSWORD` for CIRCL passive DNS
 
-It focuses on enrichment, exposure context, attack-vector analysis, evidence organization, and analyst-reviewed defensive decisions.
+## Deployment Notes
+
+- Public deployment should use HTTPS and a reverse proxy such as Cloudflare.
+- Keep `SECURITY_MCP_PUBLIC_MODE=true` only when auth is configured.
+- Keep `SECURITY_MCP_PUBLIC_BASE_URL` and `SECURITY_MCP_OAUTH_ISSUER` set to the public HTTPS origin.
+- Do not enable query-token auth unless required by a connector.
+- Keep web UI internal only. Expose MCP endpoint externally, not analyst UI routes.
 
 ## Contributing
 
-Issues, feature requests, and pull requests are welcome.
+Run before opening PR:
 
-Good contributions are focused, tested, documented, and aligned with the project goal: useful security enrichment without unnecessary complexity.
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo build --release
+```
 
 ## License
 
-[MIT](LICENSE)
+MIT

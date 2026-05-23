@@ -1,1 +1,6 @@
 /target
+/docs
+README.old.md
+.env
+security-mcp.sqlite
+*.sqlite
