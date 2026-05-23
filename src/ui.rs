@@ -675,8 +675,8 @@ async fn settings(
             auth_summary,
             html_escape(&config),
         ),
-    ))
-    .into_response()
+    );
+    ([(http::header::CACHE_CONTROL, "no-store, private")], Html(html_body)).into_response()
 }
 
 async fn settings_save(
