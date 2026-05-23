@@ -10,9 +10,9 @@ use serde_json::Value;
 
 use crate::auth::{AuthIdentity, AuthLayer};
 use crate::modules::{
-    security_compare, security_investigate, security_investigate_cve,
-    security_investigate_indicator, security_run_tool, security_scan_dependencies,
-    security_tool_catalog,
+    security_classify_hash, security_compare, security_extract_iocs, security_investigate,
+    security_investigate_cve, security_investigate_indicator, security_run_tool,
+    security_scan_dependencies, security_tool_catalog,
 };
 use crate::types::{
     AppState, CompareInput, CveInvestigationInput, DependencyScanInput,
@@ -205,6 +205,14 @@ async fn call_tool(
             let input: RunToolInput = serde_json::from_value(args)?;
             let _requested_output_mode = input.output_mode.clone();
             security_run_tool(state, &input.tool_id, input.args, auth).await
+        }
+        "security_extract_iocs" => {
+            let text = args["text"].as_str().unwrap_or("");
+            security_extract_iocs(text).await
+        }
+        "security_classify_hash" => {
+            let hash = args["hash"].as_str().unwrap_or("");
+            security_classify_hash(hash).await
         }
         _ => Err(anyhow::anyhow!("unknown tool")),
     }
