@@ -589,7 +589,8 @@ fn pkce_s256(verifier: &str) -> String {
 }
 
 fn random_token(len: usize) -> String {
-    Alphanumeric.sample_string(&mut rand::rng(), len)
+    use rand::rngs::OsRng;
+    Alphanumeric.sample_string(&mut OsRng, len)
 }
 
 fn constant_time_eq(expected: &str, provided: &str) -> bool {
