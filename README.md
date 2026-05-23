@@ -20,6 +20,7 @@ Security MCP is a Rust MCP server for security enrichment, passive recon, CVE in
   - `/sources`
   - `/cache`
   - `/audit`
+  - `/rate-limits`
   - `/settings`
   - localhost-only by default via `SECURITY_MCP_UI_LOCALHOST_ONLY=true`
 - Security defaults:
@@ -66,8 +67,28 @@ OAuth flow supports authorization code with PKCE S256 and issues short-lived opa
 - Ransomwhere
 - OSV
 - GitHub advisories search
+- Censys (internet exposure and certificate intelligence)
+- AlienVault OTX (threat intelligence pulses)
+- MISP (enterprise threat intel)
+- Pulsedive (threat intelligence)
+- Hybrid Analysis (hash intelligence)
+- Google Safe Browsing (URL safety)
 
 Missing API keys are returned as explicit source status instead of fake success.
+
+## Rate Limits and Quota Awareness
+
+Security MCP tracks per-source rate limits and quotas. See [docs/RATE_LIMITS.md](docs/RATE_LIMITS.md) for detailed documentation.
+
+```bash
+# Rate-limit policy
+SECURITY_MCP_RATE_LIMIT_DEFAULT_PLAN=free
+SECURITY_MCP_RATE_LIMIT_WARN_REMAINING_PERCENT=20
+SECURITY_MCP_RATE_LIMIT_BLOCK_REMAINING_PERCENT=5
+SECURITY_MCP_RATE_LIMIT_ENABLE_SOFT_BLOCK=true
+```
+
+When a source reaches the block threshold (default 5%), it is soft-blocked and skipped in multi-source investigations. The `/rate-limits` page shows current quota status for all sources.
 
 ## Quick Start
 
@@ -126,6 +147,7 @@ curl -s http://127.0.0.1:8080/mcp \
 
 Set only keys for sources you use. Missing keys are reported as `not_configured` in source status.
 
+### Core Sources
 - `NVD_API_KEY` for NVD
 - `SHODAN_API_KEY` for Shodan
 - `GREYNOISE_API_KEY` for GreyNoise
@@ -134,6 +156,15 @@ Set only keys for sources you use. Missing keys are reported as `not_configured`
 - `URLSCAN_API_KEY` for URLScan
 - `GITHUB_TOKEN` for GitHub advisories
 - `CIRCL_PD_USER` and `CIRCL_PD_PASSWORD` for CIRCL passive DNS
+
+### Extended Sources
+- `CENSYS_API_ID` and `CENSYS_API_SECRET` for Censys
+- `SECURITYTRAILS_API_KEY` for SecurityTrails
+- `OTX_API_KEY` for AlienVault OTX
+- `MISP_BASE_URL` and `MISP_API_KEY` for MISP
+- `GOOGLE_SAFE_BROWSING_API_KEY` for Google Safe Browsing
+- `PULSEDIVE_API_KEY` for Pulsedive
+- `HYBRID_ANALYSIS_API_KEY` for Hybrid Analysis
 
 ## Deployment Notes
 
