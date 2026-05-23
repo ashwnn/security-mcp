@@ -19,6 +19,7 @@ mod db;
 mod mcp;
 mod modules;
 mod oauth;
+mod rate_limit;
 mod types;
 mod ui;
 mod validation;
@@ -27,6 +28,7 @@ use auth::AuthLayer;
 use config::Cli;
 use db::Database;
 use modules::Registry;
+use rate_limit::{QuotaTracker, RateLimitPolicy};
 use types::AppState;
 
 #[tokio::main]
@@ -53,6 +55,20 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("failed to build reqwest client")?;
 
+    let policy = RateLimitPolicy {
+        default_plan: match config.rate_limit_default_plan.as_str() {
+            "paid" => rate_limit::RateLimitPlan::Paid,
+            "enterprise" => rate_limit::RateLimitPlan::Enterprise,
+            "unlimited" => rate_limit::RateLimitPlan::Unlimited,
+            _ => rate_limit::RateLimitPlan::Free,
+        },
+        warn_remaining_percent: config.rate_limit_warn_remaining_percent,
+        block_remaining_percent: config.rate_limit_block_remaining_percent,
+        soft_block_enabled: config.rate_limit_soft_block_enabled,
+    };
+
+    let quota_tracker = Arc::new(QuotaTracker::new(policy));
+
     let state = Arc::new(AppState {
         config: config.clone(),
         db,
@@ -66,6 +82,7 @@ async fn main() -> anyhow::Result<()> {
             config.lookup_rate_limit_per_minute,
             std::time::Duration::from_secs(60),
         ),
+        quota_tracker,
     });
 
     let auth_layer = AuthLayer::new(state.clone());
@@ -84,7 +101,11 @@ async fn main() -> anyhow::Result<()> {
         ))
         .layer(SetResponseHeaderLayer::if_not_present(
             http::header::CONTENT_SECURITY_POLICY,
-            http::HeaderValue::from_static("default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'"),
+            http::HeaderValue::from_static("default-src 'self'; img-src 'self' data:; style-src 'self'; form-action 'self'; frame-ancestors 'none'"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            http::header::STRICT_TRANSPORT_SECURITY,
+            http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
         ));
 
     let app = ui::router(state.clone(), auth_layer.clone())

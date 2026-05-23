@@ -1,8 +1,10 @@
 mod common;
 mod high_level;
+mod local;
 mod sources_cve;
 mod sources_deps;
 mod sources_infra;
+mod sources_new;
 mod sources_threat;
 
 pub use high_level::{

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, db::Database, modules::Registry, oauth::SimpleRateLimiter};
+use crate::{config::Config, db::Database, modules::Registry, oauth::SimpleRateLimiter, rate_limit::{QuotaTracker, RateLimitSummary}};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -13,6 +13,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub auth_rate_limiter: Arc<SimpleRateLimiter>,
     pub lookup_rate_limiter: Arc<SimpleRateLimiter>,
+    pub quota_tracker: Arc<QuotaTracker>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -53,6 +54,8 @@ pub struct InvestigationResult {
     pub sources: Vec<SourceStatus>,
     pub raw: serde_json::Value,
     pub unknowns: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rate_limit_summary: Option<RateLimitSummary>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

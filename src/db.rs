@@ -72,6 +72,7 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS oauth_auth_codes (code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL, code_challenge_method TEXT NOT NULL, scope TEXT NOT NULL, state TEXT, subject TEXT NOT NULL, expires_at TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS oauth_access_tokens (token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL, subject TEXT NOT NULL, auth_method TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS source_health (source_name TEXT PRIMARY KEY, last_success_at TEXT, last_error_at TEXT, last_error TEXT)",
+            "CREATE TABLE IF NOT EXISTS source_usage (source TEXT NOT NULL, window TEXT NOT NULL, request_count INTEGER DEFAULT 0, success_count INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, timeout_count INTEGER DEFAULT 0, rate_limit_count INTEGER DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, reset_estimate TEXT, PRIMARY KEY (source, window))",
         ];
 
         for statement in statements {
@@ -387,6 +388,53 @@ impl Database {
                 "last_success_at": row.get::<Option<String>, _>("last_success_at"),
                 "last_error_at": row.get::<Option<String>, _>("last_error_at"),
                 "last_error": row.get::<Option<String>, _>("last_error"),
+            }));
+        }
+        Ok(out)
+    }
+
+    pub async fn source_usage_record(
+        &self,
+        source: &str,
+        window: &str,
+        request_count: i64,
+        success_count: i64,
+        error_count: i64,
+        timeout_count: i64,
+        rate_limit_count: i64,
+    ) -> anyhow::Result<()> {
+        sqlx::query("INSERT INTO source_usage (source, window, request_count, success_count, error_count, timeout_count, rate_limit_count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, window) DO UPDATE SET request_count = excluded.request_count, success_count = excluded.success_count, error_count = excluded.error_count, timeout_count = excluded.timeout_count, rate_limit_count = excluded.rate_limit_count, last_seen = excluded.last_seen")
+            .bind(source)
+            .bind(window)
+            .bind(request_count)
+            .bind(success_count)
+            .bind(error_count)
+            .bind(timeout_count)
+            .bind(rate_limit_count)
+            .bind(Utc::now().to_rfc3339())
+            .bind(Utc::now().to_rfc3339())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn source_usage_list(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        let rows = sqlx::query("SELECT source, window, request_count, success_count, error_count, timeout_count, rate_limit_count, first_seen, last_seen, reset_estimate FROM source_usage ORDER BY source, window")
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            out.push(serde_json::json!({
+                "source": row.get::<String, _>("source"),
+                "window": row.get::<String, _>("window"),
+                "request_count": row.get::<i64, _>("request_count"),
+                "success_count": row.get::<i64, _>("success_count"),
+                "error_count": row.get::<i64, _>("error_count"),
+                "timeout_count": row.get::<i64, _>("timeout_count"),
+                "rate_limit_count": row.get::<i64, _>("rate_limit_count"),
+                "first_seen": row.get::<Option<String>, _>("first_seen"),
+                "last_seen": row.get::<Option<String>, _>("last_seen"),
+                "reset_estimate": row.get::<Option<String>, _>("reset_estimate"),
             }));
         }
         Ok(out)

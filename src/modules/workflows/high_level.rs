@@ -13,10 +13,13 @@ use super::sources_infra::{
 use super::sources_threat::{
     malwarebazaar_lookup, ransomwhere_lookup, threatfox_lookup, urlscan_lookup, virustotal_lookup,
 };
+use super::local::{extract_iocs, classify_hash, IocExtraction, HashClassification};
+use super::sources_new::{censys_lookup, hybrid_analysis_lookup, misp_lookup, otx_lookup, pulsedive_lookup};
 use crate::auth::AuthIdentity;
 use crate::cache::CacheStore;
 use crate::modules::parsers::parse_dependency_file;
 use crate::modules::registry::Registry;
+use crate::rate_limit::{parse_rate_limit_headers, parse_retry_after, RateLimitSummary};
 use crate::types::{
     CompareInput, CveInvestigationInput, DependencyScanInput, IndicatorInvestigationInput,
     InvestigationInput, InvestigationResult, OutputMode, SourceStatus, ToolCatalogInput,
@@ -499,6 +502,18 @@ pub async fn security_run_tool(
     }))
 }
 
+pub async fn security_extract_iocs(
+    text: &str,
+) -> Result<IocExtraction> {
+    Ok(extract_iocs(text))
+}
+
+pub async fn security_classify_hash(
+    hash: &str,
+) -> Result<HashClassification> {
+    Ok(classify_hash(hash))
+}
+
 async fn run_module(
     state: &crate::types::AppState,
     module_id: &str,
@@ -587,6 +602,11 @@ async fn execute_module(
         "check_ransomware" => ransomwhere_lookup(state, target).await,
         "scan_dependencies" => osv_scan(state, args).await,
         "scan_github_advisories" => github_advisory_scan(state, args).await,
+        "censys_lookup" => censys_lookup(state, target).await,
+        "otx_lookup" => otx_lookup(state, target).await,
+        "misp_lookup" => misp_lookup(state, target).await,
+        "pulsedive_lookup" => pulsedive_lookup(state, target).await,
+        "hybrid_analysis_lookup" => hybrid_analysis_lookup(state, target).await,
         _ => bail!("unsupported module"),
     }
 }

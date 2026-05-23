@@ -60,6 +60,22 @@ pub struct Config {
     pub github_token: Option<String>,
     pub circl_pd_user: Option<String>,
     pub circl_pd_password: Option<String>,
+    // Rate-limit policy
+    pub rate_limit_default_plan: String,
+    pub rate_limit_warn_remaining_percent: f64,
+    pub rate_limit_block_remaining_percent: f64,
+    pub rate_limit_soft_block_enabled: bool,
+    // New source API keys
+    pub censys_api_id: Option<String>,
+    pub censys_api_secret: Option<String>,
+    pub securitytrails_api_key: Option<String>,
+    pub otx_api_key: Option<String>,
+    pub misp_base_url: Option<String>,
+    pub misp_api_key: Option<String>,
+    pub misp_verify_tls: bool,
+    pub google_safe_browsing_api_key: Option<String>,
+    pub pulsedive_api_key: Option<String>,
+    pub hybrid_analysis_api_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +277,36 @@ impl Config {
                 .ok()
                 .or_else(|| std::env::var("CIRCL_PASSIVE_DNS_PASSWORD").ok())
                 .filter(|v| !v.is_empty()),
+            // Rate-limit policy
+            rate_limit_default_plan: std::env::var("SECURITY_MCP_RATE_LIMIT_DEFAULT_PLAN")
+                .ok()
+                .unwrap_or_else(|| "free".to_string()),
+            rate_limit_warn_remaining_percent: std::env::var("SECURITY_MCP_RATE_LIMIT_WARN_REMAINING_PERCENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(20.0),
+            rate_limit_block_remaining_percent: std::env::var("SECURITY_MCP_RATE_LIMIT_BLOCK_REMAINING_PERCENT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5.0),
+            rate_limit_soft_block_enabled: std::env::var("SECURITY_MCP_RATE_LIMIT_ENABLE_SOFT_BLOCK")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            // New source API keys
+            censys_api_id: std::env::var("CENSYS_API_ID").ok().filter(|v| !v.is_empty()),
+            censys_api_secret: std::env::var("CENSYS_API_SECRET").ok().filter(|v| !v.is_empty()),
+            securitytrails_api_key: std::env::var("SECURITYTRAILS_API_KEY").ok().filter(|v| !v.is_empty()),
+            otx_api_key: std::env::var("OTX_API_KEY").ok().filter(|v| !v.is_empty()),
+            misp_base_url: std::env::var("MISP_BASE_URL").ok().filter(|v| !v.is_empty()),
+            misp_api_key: std::env::var("MISP_API_KEY").ok().filter(|v| !v.is_empty()),
+            misp_verify_tls: std::env::var("MISP_VERIFY_TLS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(true),
+            google_safe_browsing_api_key: std::env::var("GOOGLE_SAFE_BROWSING_API_KEY").ok().filter(|v| !v.is_empty()),
+            pulsedive_api_key: std::env::var("PULSEDIVE_API_KEY").ok().filter(|v| !v.is_empty()),
+            hybrid_analysis_api_key: std::env::var("HYBRID_ANALYSIS_API_KEY").ok().filter(|v| !v.is_empty()),
         };
 
         config.validate()?;
@@ -345,6 +391,13 @@ impl Config {
             "urlscan" => self.urlscan_api_key.is_some(),
             "github" => self.github_token.is_some(),
             "circl_passive_dns" => self.circl_pd_user.is_some() && self.circl_pd_password.is_some(),
+            "censys" => self.censys_api_id.is_some() && self.censys_api_secret.is_some(),
+            "securitytrails" => self.securitytrails_api_key.is_some(),
+            "otx" => self.otx_api_key.is_some(),
+            "misp" => self.misp_base_url.is_some() && self.misp_api_key.is_some(),
+            "google_safe_browsing" => self.google_safe_browsing_api_key.is_some(),
+            "pulsedive" => self.pulsedive_api_key.is_some(),
+            "hybrid_analysis" => self.hybrid_analysis_api_key.is_some(),
             _ => true,
         }
     }
