@@ -7,20 +7,36 @@ use std::time::{Duration, Instant};
 /// Rate-limit window types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RateLimitWindow {
+    Per30Seconds,
     PerMinute,
     PerHour,
     PerDay,
+    PerWeek,
     PerMonth,
     Concurrent,
     Unknown,
 }
 
 impl RateLimitWindow {
+    pub fn duration(&self) -> Option<Duration> {
+        match self {
+            Self::Per30Seconds => Some(Duration::from_secs(30)),
+            Self::PerMinute => Some(Duration::from_secs(60)),
+            Self::PerHour => Some(Duration::from_secs(60 * 60)),
+            Self::PerDay => Some(Duration::from_secs(60 * 60 * 24)),
+            Self::PerWeek => Some(Duration::from_secs(60 * 60 * 24 * 7)),
+            Self::PerMonth => Some(Duration::from_secs(60 * 60 * 24 * 30)),
+            Self::Concurrent | Self::Unknown => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::Per30Seconds => "per_30_seconds",
             Self::PerMinute => "per_minute",
             Self::PerHour => "per_hour",
             Self::PerDay => "per_day",
+            Self::PerWeek => "per_week",
             Self::PerMonth => "per_month",
             Self::Concurrent => "concurrent",
             Self::Unknown => "unknown",
@@ -156,7 +172,12 @@ impl SourceQuota {
     }
 
     /// Check if source should be skipped due to quota protection
-    pub fn should_skip(&self, warn_threshold: f64, block_threshold: f64, soft_block_enabled: bool) -> bool {
+    pub fn should_skip(
+        &self,
+        warn_threshold: f64,
+        block_threshold: f64,
+        soft_block_enabled: bool,
+    ) -> bool {
         // If not configured, skip
         if self.status == QuotaStatus::NotConfigured || self.status == QuotaStatus::Disabled {
             return true;
@@ -258,14 +279,32 @@ impl QuotaTracker {
     pub fn record_request(&self, source: &str) {
         if let Ok(mut q) = self.quotas.write() {
             if let Some(quota) = q.get_mut(source) {
+                let now = Utc::now();
+                if let (Some(reset_at), Some(cap)) = (quota.reset_at, quota.cap) {
+                    if reset_at <= now {
+                        quota.used = 0;
+                        quota.remaining = Some(cap);
+                        quota.remaining_percent = Some(100.0);
+                        quota.status = QuotaStatus::Ok;
+                        quota.reset_at = quota.limit_window.duration().map(|window| {
+                            now + chrono::Duration::from_std(window).expect("valid quota window")
+                        });
+                    }
+                } else if quota.reset_at.is_none() {
+                    quota.reset_at = quota.limit_window.duration().map(|window| {
+                        now + chrono::Duration::from_std(window).expect("valid quota window")
+                    });
+                }
+
                 quota.used += 1;
-                quota.last_request = Some(Utc::now());
+                quota.last_request = Some(now);
 
                 // Update remaining if we have a cap
                 if let Some(cap) = quota.cap {
                     if cap > 0 {
                         quota.remaining = Some(cap.saturating_sub(quota.used));
-                        quota.remaining_percent = Some((quota.remaining.unwrap_or(0) as f64 / cap as f64) * 100.0);
+                        quota.remaining_percent =
+                            Some((quota.remaining.unwrap_or(0) as f64 / cap as f64) * 100.0);
 
                         // Update status
                         if let Some(pct) = quota.remaining_percent {
@@ -327,7 +366,9 @@ impl QuotaTracker {
 
     /// Get all quotas as a list
     pub fn all_quotas(&self) -> Vec<SourceQuota> {
-        self.quotas.read().ok()
+        self.quotas
+            .read()
+            .ok()
             .map(|q| q.values().cloned().collect())
             .unwrap_or_default()
     }
@@ -337,7 +378,11 @@ impl QuotaTracker {
         let mut skipped = Vec::new();
         if let Ok(q) = self.quotas.read() {
             for (source, quota) in q.iter() {
-                if quota.should_skip(self.policy.warn_remaining_percent, self.policy.block_remaining_percent, self.policy.soft_block_enabled) {
+                if quota.should_skip(
+                    self.policy.warn_remaining_percent,
+                    self.policy.block_remaining_percent,
+                    self.policy.soft_block_enabled,
+                ) {
                     let reason = if quota.status == QuotaStatus::QuotaProtected {
                         "quota_protected"
                     } else if quota.status == QuotaStatus::RateLimited {
@@ -466,17 +511,20 @@ pub fn parse_retry_after(value: &str) -> Option<i64> {
 /// Parse X-RateLimit-* headers if present
 pub fn parse_rate_limit_headers(headers: &http::HeaderMap) -> Option<(Option<u64>, Option<i64>)> {
     // Different providers use different header names
-    let limit = headers.get("X-RateLimit-Limit")
+    let limit = headers
+        .get("X-RateLimit-Limit")
         .or_else(|| headers.get("X-Rate-Lem"))
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok());
 
-    let remaining = headers.get("X-RateLimit-Remaining")
+    let remaining = headers
+        .get("X-RateLimit-Remaining")
         .or_else(|| headers.get("X-Rate-Remaining"))
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.parse().ok());
 
-    let reset = headers.get("X-RateLimit-Reset")
+    let reset = headers
+        .get("X-RateLimit-Reset")
         .or_else(|| headers.get("X-Rate-Reset"))
         .or_else(|| headers.get("X-Quota-Reset"))
         .and_then(|v| v.to_str().ok())
@@ -486,34 +534,184 @@ pub fn parse_rate_limit_headers(headers: &http::HeaderMap) -> Option<(Option<u64
 }
 
 /// Default quota configuration for known sources
-pub fn default_source_quotas() -> Vec<(&'static str, &'static str, RateLimitPlan, RateLimitWindow, Option<u64>)> {
+pub fn default_source_quotas() -> Vec<(
+    &'static str,
+    &'static str,
+    RateLimitPlan,
+    RateLimitWindow,
+    Option<u64>,
+)> {
     vec![
         // Source, Category, Plan, Window, Cap
-        ("nvd", "cve", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(50)),
-        ("epss", "cve", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(60)),
-        ("cisa_kev", "cve", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(100)),
-        ("abuseipdb", "network", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(1000)),
-        ("greynoise", "network", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(250)),
-        ("shodan", "network", RateLimitPlan::Free, RateLimitWindow::PerMonth, Some(100)),
-        ("virustotal", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(500)),
-        ("urlscan", "threat", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(100)),
-        ("circl_passive_dns", "network", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(500)),
-        ("rdap", "domain", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(60)),
-        ("dns_over_https", "domain", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(120)),
-        ("crtsh", "domain", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(30)),
-        ("malwarebazaar", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(500)),
-        ("threatfox", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(500)),
-        ("ransomwhere", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(200)),
-        ("osv", "devsecops", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(60)),
-        ("github", "devsecops", RateLimitPlan::Free, RateLimitWindow::PerHour, Some(5000)),
+        (
+            "nvd",
+            "cve",
+            RateLimitPlan::Free,
+            RateLimitWindow::Per30Seconds,
+            Some(5),
+        ),
+        (
+            "epss",
+            "cve",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerMinute,
+            Some(1000),
+        ),
+        (
+            "cisa_kev",
+            "cve",
+            RateLimitPlan::Unlimited,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "abuseipdb",
+            "network",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerDay,
+            Some(1000),
+        ),
+        (
+            "greynoise",
+            "network",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerWeek,
+            Some(50),
+        ),
+        (
+            "shodan",
+            "network",
+            RateLimitPlan::Paid,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "virustotal",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerMinute,
+            Some(4),
+        ),
+        (
+            "urlscan",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerDay,
+            Some(1000),
+        ),
+        (
+            "circl_passive_dns",
+            "network",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "rdap",
+            "domain",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "dns_over_https",
+            "domain",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "crtsh",
+            "domain",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "malwarebazaar",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "threatfox",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "ransomwhere",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "osv",
+            "devsecops",
+            RateLimitPlan::Unlimited,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "github",
+            "devsecops",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerMinute,
+            Some(30),
+        ),
         // New sources
-        ("censys", "network", RateLimitPlan::Free, RateLimitWindow::PerMonth, Some(250)),
-        ("securitytrails", "domain", RateLimitPlan::Free, RateLimitWindow::PerMonth, Some(100)),
-        ("otx", "threat", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(50)),
-        ("misp", "threat", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(60)),
-        ("google_safe_browsing", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(10000)),
-        ("pulsedive", "threat", RateLimitPlan::Free, RateLimitWindow::PerDay, Some(500)),
-        ("hybrid_analysis", "threat", RateLimitPlan::Free, RateLimitWindow::PerMinute, Some(10)),
+        (
+            "censys",
+            "network",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerMonth,
+            Some(100),
+        ),
+        (
+            "securitytrails",
+            "domain",
+            RateLimitPlan::Paid,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "otx",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "misp",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "google_safe_browsing",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
+        (
+            "pulsedive",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::PerDay,
+            Some(50),
+        ),
+        (
+            "hybrid_analysis",
+            "threat",
+            RateLimitPlan::Free,
+            RateLimitWindow::Unknown,
+            None,
+        ),
     ]
 }
 
@@ -560,6 +758,19 @@ mod tests {
     }
 
     #[test]
+    fn quota_window_durations() {
+        assert_eq!(
+            RateLimitWindow::Per30Seconds.duration(),
+            Some(Duration::from_secs(30))
+        );
+        assert_eq!(
+            RateLimitWindow::PerWeek.duration(),
+            Some(Duration::from_secs(60 * 60 * 24 * 7))
+        );
+        assert_eq!(RateLimitWindow::Unknown.duration(), None);
+    }
+
+    #[test]
     fn quota_tracker_records() {
         let tracker = QuotaTracker::new(RateLimitPolicy::default());
 
@@ -573,6 +784,27 @@ mod tests {
         let quota = tracker.get_quota("test_source").unwrap();
         assert_eq!(quota.used, 1);
         assert!(quota.last_success.is_some());
+    }
+
+    #[test]
+    fn quota_tracker_resets_after_window() {
+        let tracker = QuotaTracker::new(RateLimitPolicy::default());
+
+        let mut quota = SourceQuota::new("window_source", "threat");
+        quota.cap = Some(2);
+        quota.limit_window = RateLimitWindow::PerMinute;
+        quota.reset_at = Some(Utc::now() - chrono::Duration::seconds(1));
+        quota.used = 2;
+        quota.remaining = Some(0);
+        quota.remaining_percent = Some(0.0);
+        tracker.set_quota(quota);
+
+        tracker.record_request("window_source");
+
+        let quota = tracker.get_quota("window_source").unwrap();
+        assert_eq!(quota.used, 1);
+        assert_eq!(quota.remaining, Some(1));
+        assert!(quota.remaining_percent.unwrap() > 0.0);
     }
 
     #[test]
