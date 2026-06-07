@@ -2,7 +2,6 @@ use anyhow::{Result, bail};
 use serde_json::Value;
 
 use super::common::{ModuleRunResult, missing_key, success};
-use crate::validation::validate_public_ip;
 
 /// Censys - internet exposure and certificate intelligence
 pub(super) async fn censys_lookup(
@@ -76,12 +75,27 @@ pub(super) async fn otx_lookup(
     let is_ip = indicator.parse::<std::net::IpAddr>().is_ok();
     let is_hash = indicator.len() == 32 || indicator.len() == 40 || indicator.len() == 64;
 
-    let (type_name, path) = if is_ip {
-        ("ip", format!("/api/v1/indicators/IPv4/{}/general", urlencoding::encode(indicator)))
+    let (_type_name, path) = if is_ip {
+        (
+            "ip",
+            format!(
+                "/api/v1/indicators/IPv4/{}/general",
+                urlencoding::encode(indicator)
+            ),
+        )
     } else if is_hash {
-        ("hash", format!("/api/v1/indicators/file/{}", urlencoding::encode(indicator)))
+        (
+            "hash",
+            format!("/api/v1/indicators/file/{}", urlencoding::encode(indicator)),
+        )
     } else {
-        ("hostname", format!("/api/v1/indicators/hostname/{}/general", urlencoding::encode(indicator)))
+        (
+            "hostname",
+            format!(
+                "/api/v1/indicators/hostname/{}/general",
+                urlencoding::encode(indicator)
+            ),
+        )
     };
 
     let resp = state
@@ -131,6 +145,7 @@ pub(super) async fn misp_lookup(
     let Some(key) = state.config.misp_api_key.as_deref() else {
         return Ok(missing_key("misp", "MISP_API_KEY"));
     };
+    let _verify_tls = state.config.misp_verify_tls;
 
     // Validate it's not a private target
     if indicator.parse::<std::net::IpAddr>().is_ok() {
@@ -160,9 +175,18 @@ pub(super) async fn misp_lookup(
     state.quota_tracker.record_success("misp");
 
     let response = body.get("response").and_then(|r| r.get("Attribute"));
-    let count = response.as_array().map(|a| a.len()).unwrap_or(0);
+    let count = response
+        .and_then(|r| r.as_array())
+        .map(|a| a.len())
+        .unwrap_or(0);
 
-    let severity = if count > 10 { "high" } else if count > 0 { "medium" } else { "low" };
+    let severity = if count > 10 {
+        "high"
+    } else if count > 0 {
+        "medium"
+    } else {
+        "low"
+    };
     Ok(success(
         "misp",
         "MISP attribute lookup",
@@ -190,8 +214,13 @@ pub(super) async fn pulsedive_lookup(
     let status = resp.status();
 
     if status.as_u16() == 429 {
-        state.quota_tracker.record_rate_limit_error("pulsedive", None);
-        return Ok(super::common::source_error("pulsedive", "rate limit exceeded"));
+        state
+            .quota_tracker
+            .record_rate_limit_error("pulsedive", None);
+        return Ok(super::common::source_error(
+            "pulsedive",
+            "rate limit exceeded",
+        ));
     }
 
     let body: Value = resp.json().await?;
@@ -229,7 +258,10 @@ pub(super) async fn hybrid_analysis_lookup(
 
     let resp = state
         .http_client
-        .get(format!("https://www.hybrid-analysis.com/api/v2/search/hash/{}", urlencoding::encode(hash)))
+        .get(format!(
+            "https://www.hybrid-analysis.com/api/v2/search/hash/{}",
+            urlencoding::encode(hash)
+        ))
         .header("api-key", key)
         .header("Accept", "application/json")
         .send()
@@ -237,8 +269,13 @@ pub(super) async fn hybrid_analysis_lookup(
     let status = resp.status();
 
     if status.as_u16() == 429 {
-        state.quota_tracker.record_rate_limit_error("hybrid_analysis", None);
-        return Ok(super::common::source_error("hybrid_analysis", "rate limit exceeded"));
+        state
+            .quota_tracker
+            .record_rate_limit_error("hybrid_analysis", None);
+        return Ok(super::common::source_error(
+            "hybrid_analysis",
+            "rate limit exceeded",
+        ));
     }
 
     let body: Value = resp.json().await?;

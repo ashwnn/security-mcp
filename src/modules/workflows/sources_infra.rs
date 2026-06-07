@@ -41,7 +41,10 @@ pub(super) async fn greynoise_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://api.greynoise.io/v3/community/{}", urlencoding::encode(ip)))
+        .get(format!(
+            "https://api.greynoise.io/v3/community/{}",
+            urlencoding::encode(ip)
+        ))
         .header("key", key)
         .send()
         .await?;
@@ -68,7 +71,10 @@ pub(super) async fn shodan_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://api.shodan.io/shodan/host/{}", urlencoding::encode(ip)))
+        .get(format!(
+            "https://api.shodan.io/shodan/host/{}",
+            urlencoding::encode(ip)
+        ))
         .query(&[("key", key)])
         .send()
         .await?;
@@ -98,7 +104,10 @@ pub(super) async fn circl_pdns_lookup(
     };
     let resp = state
         .http_client
-        .get(format!("https://www.circl.lu/pdns/query/{}", urlencoding::encode(indicator)))
+        .get(format!(
+            "https://www.circl.lu/pdns/query/{}",
+            urlencoding::encode(indicator)
+        ))
         .basic_auth(user, Some(pass))
         .send()
         .await?;
@@ -198,7 +207,7 @@ pub(super) async fn http_headers_lookup(
     } else {
         format!("https://{target}")
     };
-    validate_public_url(&url, state.config.allow_private_targets)?;
+    validate_public_url(&url, state.config.allow_private_targets).await?;
     let resp = state.http_client.get(url).send().await?;
     let status = resp.status().as_u16();
     let mut headers = std::collections::BTreeMap::new();

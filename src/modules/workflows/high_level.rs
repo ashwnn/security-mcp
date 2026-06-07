@@ -4,22 +4,23 @@ use serde_json::Value;
 use super::common::{
     ModuleRunResult, audit, calculate_risk_from_findings, mask_output_mode, source_error,
 };
+use super::local::{HashClassification, IocExtraction, classify_hash, extract_iocs};
 use super::sources_cve::{epss_lookup, kev_lookup, mitre_mapping, nvd_lookup, poc_lookup};
 use super::sources_deps::{github_advisory_scan, osv_scan};
 use super::sources_infra::{
     abuseipdb_lookup, circl_pdns_lookup, cloud_hint, crtsh_lookup, doh_lookup, greynoise_lookup,
     http_headers_lookup, rdap_lookup, shodan_lookup, technology_hint,
 };
+use super::sources_new::{
+    censys_lookup, hybrid_analysis_lookup, misp_lookup, otx_lookup, pulsedive_lookup,
+};
 use super::sources_threat::{
     malwarebazaar_lookup, ransomwhere_lookup, threatfox_lookup, urlscan_lookup, virustotal_lookup,
 };
-use super::local::{extract_iocs, classify_hash, IocExtraction, HashClassification};
-use super::sources_new::{censys_lookup, hybrid_analysis_lookup, misp_lookup, otx_lookup, pulsedive_lookup};
 use crate::auth::AuthIdentity;
 use crate::cache::CacheStore;
 use crate::modules::parsers::parse_dependency_file;
 use crate::modules::registry::Registry;
-use crate::rate_limit::{parse_rate_limit_headers, parse_retry_after, RateLimitSummary};
 use crate::types::{
     CompareInput, CveInvestigationInput, DependencyScanInput, IndicatorInvestigationInput,
     InvestigationInput, InvestigationResult, OutputMode, SourceStatus, ToolCatalogInput,
@@ -195,6 +196,7 @@ pub async fn security_investigate_cve(
         sources,
         raw: Value::Object(raw),
         unknowns: vec![],
+        rate_limit_summary: None,
     };
 
     audit(
@@ -230,7 +232,7 @@ pub async fn security_investigate_indicator(
         validate_public_ip(input.indicator.parse()?)?;
     }
     if indicator_type == "url" {
-        validate_public_url(&input.indicator, state.config.allow_private_targets)?;
+        validate_public_url(&input.indicator, state.config.allow_private_targets).await?;
     }
 
     let start = std::time::Instant::now();
@@ -321,6 +323,7 @@ pub async fn security_investigate_indicator(
         sources,
         raw: Value::Object(raw),
         unknowns: vec![],
+        rate_limit_summary: None,
     };
 
     audit(
@@ -387,6 +390,7 @@ pub async fn security_scan_dependencies(
         sources,
         raw: serde_json::json!({"osv": osv.raw, "github": ghsa.raw}),
         unknowns: vec![],
+        rate_limit_summary: None,
     };
 
     audit(
@@ -502,15 +506,11 @@ pub async fn security_run_tool(
     }))
 }
 
-pub async fn security_extract_iocs(
-    text: &str,
-) -> Result<IocExtraction> {
+pub async fn security_extract_iocs(text: &str) -> Result<IocExtraction> {
     Ok(extract_iocs(text))
 }
 
-pub async fn security_classify_hash(
-    hash: &str,
-) -> Result<HashClassification> {
+pub async fn security_classify_hash(hash: &str) -> Result<HashClassification> {
     Ok(classify_hash(hash))
 }
 

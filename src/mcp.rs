@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use axum::extract::State;
+use axum::extract::{Extension, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Extension, Json, Router};
+use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -51,6 +51,7 @@ pub fn router(state: Arc<AppState>, auth_layer: AuthLayer) -> Router {
     auth_layer.protect(protected)
 }
 
+#[axum::debug_handler]
 async fn handle_mcp(
     State(state): State<Arc<AppState>>,
     Extension(identity): Extension<AuthIdentity>,
@@ -208,11 +209,11 @@ async fn call_tool(
         }
         "security_extract_iocs" => {
             let text = args["text"].as_str().unwrap_or("");
-            security_extract_iocs(text).await
+            Ok(serde_json::to_value(security_extract_iocs(text).await?)?)
         }
         "security_classify_hash" => {
             let hash = args["hash"].as_str().unwrap_or("");
-            security_classify_hash(hash).await
+            Ok(serde_json::to_value(security_classify_hash(hash).await?)?)
         }
         _ => Err(anyhow::anyhow!("unknown tool")),
     }

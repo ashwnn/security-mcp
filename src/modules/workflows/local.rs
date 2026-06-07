@@ -1,4 +1,3 @@
-use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 
@@ -37,32 +36,35 @@ pub fn extract_iocs(text: &str) -> IocExtraction {
     // IP regex (including defanged)
     let ip_re = Regex::new(r"(?i)(?:[\d]{1,3}\.){3}[\d]{1,3}").unwrap();
     // Domain regex
-    let domain_re = Regex::new(r"(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}").unwrap();
+    let domain_re =
+        Regex::new(r"(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}").unwrap();
     // URL regex
     let url_re = Regex::new(r#"(?i)https?://[^\s<>"']+"#).unwrap();
     // Hash regex (MD5, SHA1, SHA256, SHA512)
-    let hash_re = Regex::new(r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128})\b").unwrap();
+    let hash_re =
+        Regex::new(r"\b([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128})\b")
+            .unwrap();
     // CVE regex
     let cve_re = Regex::new(r"(?i)CVE-\d{4}-\d{4,}").unwrap();
     // Email regex
     let email_re = Regex::new(r"(?i)[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}").unwrap();
 
     for cap in ip_re.find_iter(text) {
-        let ip = defang_refang(&cap.as_str());
+        let ip = defang_refang(cap.as_str());
         if is_likely_ip(&ip) {
             ips.push(ip);
         }
     }
 
     for cap in domain_re.find_iter(text) {
-        let domain = defang_refang(&cap.as_str());
+        let domain = defang_refang(cap.as_str());
         if is_likely_domain(&domain) {
             domains.push(domain);
         }
     }
 
     for cap in url_re.find_iter(text) {
-        let url = defang_refang(&cap.as_str());
+        let url = defang_refang(cap.as_str());
         urls.push(url);
     }
 
@@ -130,10 +132,26 @@ pub fn classify_hash(hash: &str) -> HashClassification {
     }
 
     let (hash_type, confidence, explanation) = match len {
-        32 => ("MD5".to_string(), "high".to_string(), "128-bit hash, commonly used for file integrity".to_string()),
-        40 => ("SHA1".to_string(), "high".to_string(), "160-bit hash, deprecated for security purposes".to_string()),
-        64 => ("SHA256".to_string(), "high".to_string(), "256-bit hash, current standard for cryptographic hashing".to_string()),
-        128 => ("SHA512".to_string(), "medium".to_string(), "512-bit hash, could also be bcrypt (60 chars) or other formats".to_string()),
+        32 => (
+            "MD5".to_string(),
+            "high".to_string(),
+            "128-bit hash, commonly used for file integrity".to_string(),
+        ),
+        40 => (
+            "SHA1".to_string(),
+            "high".to_string(),
+            "160-bit hash, deprecated for security purposes".to_string(),
+        ),
+        64 => (
+            "SHA256".to_string(),
+            "high".to_string(),
+            "256-bit hash, current standard for cryptographic hashing".to_string(),
+        ),
+        128 => (
+            "SHA512".to_string(),
+            "medium".to_string(),
+            "512-bit hash, could also be bcrypt (60 chars) or other formats".to_string(),
+        ),
         _ => {
             return HashClassification {
                 hash: hash.to_string(),
@@ -141,8 +159,11 @@ pub fn classify_hash(hash: &str) -> HashClassification {
                 is_valid_format: false,
                 normalized: None,
                 confidence: "low".to_string(),
-                explanation: format!("Unrecognized hash length: {} characters. Expected MD5 (32), SHA1 (40), SHA256 (64), or SHA512 (128)", len),
-            }
+                explanation: format!(
+                    "Unrecognized hash length: {} characters. Expected MD5 (32), SHA1 (40), SHA256 (64), or SHA512 (128)",
+                    len
+                ),
+            };
         }
     };
 
@@ -184,7 +205,11 @@ fn is_likely_domain(s: &str) -> bool {
         return false;
     }
     // Reasonable TLD
-    let tlds = ["com", "net", "org", "io", "co", "uk", "de", "fr", "ru", "cn", "jp", "br", "in", "au", "gov", "edu", "mil", "biz", "info", "me", "tv", "cc", "tk", "ml", "ga", "cf", "gq", "xyz", "top", "site", "online", "tech"];
+    let tlds = [
+        "com", "net", "org", "io", "co", "uk", "de", "fr", "ru", "cn", "jp", "br", "in", "au",
+        "gov", "edu", "mil", "biz", "info", "me", "tv", "cc", "tk", "ml", "ga", "cf", "gq", "xyz",
+        "top", "site", "online", "tech",
+    ];
     let tld = s.rsplit('.').next().unwrap_or("");
     tlds.contains(&tld) || tld.len() >= 2
 }
@@ -192,9 +217,9 @@ fn is_likely_domain(s: &str) -> bool {
 /// Defang/refang indicator
 fn defang_refang(s: &str) -> String {
     let mut result = s.to_string();
-    // Defanged patterns
+    // Refang common defanged indicator forms while preserving normal dots.
     result = result.replace("[.]", ".");
-    result = result.replace(".", "[.]");
+    result = result.replace("(.)", ".");
     result = result.replace("[:]", ":");
     result = result.replace("[@]", "@");
     result = result.replace("[/]", "/");
@@ -230,7 +255,7 @@ Contact: analyst@company.com
         assert!(result.ips.contains(&"185.220.101.34".to_string()));
         assert!(result.cves.contains(&"CVE-2024-3094".to_string()));
         assert!(!result.emails.is_empty());
-        assert!(result.hashes.len() >= 1);
+        assert!(!result.hashes.is_empty());
     }
 
     #[test]
@@ -238,7 +263,11 @@ Contact: analyst@company.com
         let cases = vec![
             ("d41d8cd98f00b204e9800998ecf8427e", "MD5", true),
             ("da39a3ee5e6b4b0d3255bfef95601890afd80709", "SHA1", true),
-            ("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "SHA256", true),
+            (
+                "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                "SHA256",
+                true,
+            ),
         ];
 
         for (hash, expected_type, expected_valid) in cases {
