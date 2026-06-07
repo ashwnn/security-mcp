@@ -184,7 +184,7 @@ impl Config {
                 .unwrap_or(true),
             oauth_allowed_scopes: parse_scopes(
                 "SECURITY_MCP_OAUTH_ALLOWED_SCOPES",
-                &["mcp:read", "mcp:tools", "mcp:raw", "mcp:admin"],
+                &["mcp:read", "mcp:tools"],
             ),
             oauth_default_scopes: parse_scopes(
                 "SECURITY_MCP_OAUTH_DEFAULT_SCOPES",
@@ -281,32 +281,52 @@ impl Config {
             rate_limit_default_plan: std::env::var("SECURITY_MCP_RATE_LIMIT_DEFAULT_PLAN")
                 .ok()
                 .unwrap_or_else(|| "free".to_string()),
-            rate_limit_warn_remaining_percent: std::env::var("SECURITY_MCP_RATE_LIMIT_WARN_REMAINING_PERCENT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(20.0),
-            rate_limit_block_remaining_percent: std::env::var("SECURITY_MCP_RATE_LIMIT_BLOCK_REMAINING_PERCENT")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5.0),
-            rate_limit_soft_block_enabled: std::env::var("SECURITY_MCP_RATE_LIMIT_ENABLE_SOFT_BLOCK")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(true),
+            rate_limit_warn_remaining_percent: std::env::var(
+                "SECURITY_MCP_RATE_LIMIT_WARN_REMAINING_PERCENT",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(20.0),
+            rate_limit_block_remaining_percent: std::env::var(
+                "SECURITY_MCP_RATE_LIMIT_BLOCK_REMAINING_PERCENT",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(5.0),
+            rate_limit_soft_block_enabled: std::env::var(
+                "SECURITY_MCP_RATE_LIMIT_ENABLE_SOFT_BLOCK",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(true),
             // New source API keys
-            censys_api_id: std::env::var("CENSYS_API_ID").ok().filter(|v| !v.is_empty()),
-            censys_api_secret: std::env::var("CENSYS_API_SECRET").ok().filter(|v| !v.is_empty()),
-            securitytrails_api_key: std::env::var("SECURITYTRAILS_API_KEY").ok().filter(|v| !v.is_empty()),
+            censys_api_id: std::env::var("CENSYS_API_ID")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            censys_api_secret: std::env::var("CENSYS_API_SECRET")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            securitytrails_api_key: std::env::var("SECURITYTRAILS_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty()),
             otx_api_key: std::env::var("OTX_API_KEY").ok().filter(|v| !v.is_empty()),
-            misp_base_url: std::env::var("MISP_BASE_URL").ok().filter(|v| !v.is_empty()),
+            misp_base_url: std::env::var("MISP_BASE_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
             misp_api_key: std::env::var("MISP_API_KEY").ok().filter(|v| !v.is_empty()),
             misp_verify_tls: std::env::var("MISP_VERIFY_TLS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(true),
-            google_safe_browsing_api_key: std::env::var("GOOGLE_SAFE_BROWSING_API_KEY").ok().filter(|v| !v.is_empty()),
-            pulsedive_api_key: std::env::var("PULSEDIVE_API_KEY").ok().filter(|v| !v.is_empty()),
-            hybrid_analysis_api_key: std::env::var("HYBRID_ANALYSIS_API_KEY").ok().filter(|v| !v.is_empty()),
+            google_safe_browsing_api_key: std::env::var("GOOGLE_SAFE_BROWSING_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            pulsedive_api_key: std::env::var("PULSEDIVE_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            hybrid_analysis_api_key: std::env::var("HYBRID_ANALYSIS_API_KEY")
+                .ok()
+                .filter(|v| !v.is_empty()),
         };
 
         config.validate()?;
@@ -316,6 +336,12 @@ impl Config {
     pub(crate) fn validate(&self) -> Result<()> {
         if self.public_mode && self.bind_addr.ip().is_loopback() {
             bail!("public mode enabled but bind address is loopback")
+        }
+        let no_auth_mode = self.bearer_token.is_none()
+            && self.api_key.is_none()
+            && (!self.oauth_enabled || self.connector_token.is_none());
+        if no_auth_mode && (self.public_mode || !self.bind_addr.ip().is_loopback()) {
+            bail!("at least one authentication mode is required outside loopback-only local mode")
         }
         if self.public_mode
             && self.bearer_token.is_none()
@@ -510,6 +536,20 @@ mod tests {
             github_token: None,
             circl_pd_user: None,
             circl_pd_password: None,
+            rate_limit_default_plan: "free".to_string(),
+            rate_limit_warn_remaining_percent: 20.0,
+            rate_limit_block_remaining_percent: 5.0,
+            rate_limit_soft_block_enabled: true,
+            censys_api_id: None,
+            censys_api_secret: None,
+            securitytrails_api_key: None,
+            otx_api_key: None,
+            misp_base_url: None,
+            misp_api_key: None,
+            misp_verify_tls: true,
+            google_safe_browsing_api_key: None,
+            pulsedive_api_key: None,
+            hybrid_analysis_api_key: None,
         };
         assert!(config.validate().is_err());
     }

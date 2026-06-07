@@ -302,6 +302,20 @@ mod tests {
             github_token: None,
             circl_pd_user: None,
             circl_pd_password: None,
+            rate_limit_default_plan: "free".to_string(),
+            rate_limit_warn_remaining_percent: 20.0,
+            rate_limit_block_remaining_percent: 5.0,
+            rate_limit_soft_block_enabled: true,
+            censys_api_id: None,
+            censys_api_secret: None,
+            securitytrails_api_key: None,
+            otx_api_key: None,
+            misp_base_url: None,
+            misp_api_key: None,
+            misp_verify_tls: true,
+            google_safe_browsing_api_key: None,
+            pulsedive_api_key: None,
+            hybrid_analysis_api_key: None,
         };
         let db = Database::connect("sqlite::memory:").await.expect("db");
         db.migrate().await.expect("migrate");
@@ -312,6 +326,14 @@ mod tests {
             http_client: reqwest::Client::new(),
             auth_rate_limiter: SimpleRateLimiter::new(100, std::time::Duration::from_secs(60)),
             lookup_rate_limiter: SimpleRateLimiter::new(100, std::time::Duration::from_secs(60)),
+            quota_tracker: std::sync::Arc::new(crate::rate_limit::QuotaTracker::new(
+                crate::rate_limit::RateLimitPolicy {
+                    default_plan: crate::rate_limit::RateLimitPlan::Free,
+                    warn_remaining_percent: 20.0,
+                    block_remaining_percent: 5.0,
+                    soft_block_enabled: true,
+                },
+            )),
         }
     }
 

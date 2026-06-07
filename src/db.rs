@@ -393,6 +393,8 @@ impl Database {
         Ok(out)
     }
 
+    #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     pub async fn source_usage_record(
         &self,
         source: &str,
@@ -418,6 +420,7 @@ impl Database {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn source_usage_list(&self) -> anyhow::Result<Vec<serde_json::Value>> {
         let rows = sqlx::query("SELECT source, window, request_count, success_count, error_count, timeout_count, rate_limit_count, first_seen, last_seen, reset_estimate FROM source_usage ORDER BY source, window")
             .fetch_all(&self.pool)

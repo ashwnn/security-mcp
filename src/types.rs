@@ -3,7 +3,13 @@ use std::sync::Arc;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{config::Config, db::Database, modules::Registry, oauth::SimpleRateLimiter, rate_limit::{QuotaTracker, RateLimitSummary}};
+use crate::{
+    config::Config,
+    db::Database,
+    modules::Registry,
+    oauth::SimpleRateLimiter,
+    rate_limit::{QuotaTracker, RateLimitSummary},
+};
 
 #[derive(Clone)]
 pub struct AppState {

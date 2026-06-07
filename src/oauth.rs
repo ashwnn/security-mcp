@@ -589,8 +589,8 @@ fn pkce_s256(verifier: &str) -> String {
 }
 
 fn random_token(len: usize) -> String {
-    use rand::rngs::OsRng;
-    Alphanumeric.sample_string(&mut OsRng, len)
+    let mut rng = rand::rng();
+    Alphanumeric.sample_string(&mut rng, len)
 }
 
 fn constant_time_eq(expected: &str, provided: &str) -> bool {
@@ -772,6 +772,20 @@ mod tests {
             github_token: None,
             circl_pd_user: None,
             circl_pd_password: None,
+            rate_limit_default_plan: "free".to_string(),
+            rate_limit_warn_remaining_percent: 20.0,
+            rate_limit_block_remaining_percent: 5.0,
+            rate_limit_soft_block_enabled: true,
+            censys_api_id: None,
+            censys_api_secret: None,
+            securitytrails_api_key: None,
+            otx_api_key: None,
+            misp_base_url: None,
+            misp_api_key: None,
+            misp_verify_tls: true,
+            google_safe_browsing_api_key: None,
+            pulsedive_api_key: None,
+            hybrid_analysis_api_key: None,
         };
 
         let missing = validate_resource_parameter(None, &config);

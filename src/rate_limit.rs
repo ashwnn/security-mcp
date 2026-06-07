@@ -1,8 +1,10 @@
+#![allow(dead_code)]
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::RwLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Rate-limit window types
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +176,7 @@ impl SourceQuota {
     /// Check if source should be skipped due to quota protection
     pub fn should_skip(
         &self,
-        warn_threshold: f64,
+        _warn_threshold: f64,
         block_threshold: f64,
         soft_block_enabled: bool,
     ) -> bool {
@@ -214,15 +216,15 @@ impl SourceQuota {
         }
         if let Some(r) = remaining {
             self.remaining = Some(r);
-            if let Some(cap) = self.cap {
-                if cap > 0 {
-                    self.remaining_percent = Some((r as f64 / cap as f64) * 100.0);
-                    self.status = if self.is_near_limit(20.0) {
-                        QuotaStatus::NearLimit
-                    } else {
-                        QuotaStatus::Ok
-                    };
-                }
+            if let Some(cap) = self.cap
+                && cap > 0
+            {
+                self.remaining_percent = Some((r as f64 / cap as f64) * 100.0);
+                self.status = if self.is_near_limit(20.0) {
+                    QuotaStatus::NearLimit
+                } else {
+                    QuotaStatus::Ok
+                };
             }
         }
         if let Some(reset_ts) = reset {
@@ -252,7 +254,7 @@ impl Default for RateLimitPolicy {
 }
 
 /// In-memory quota tracker
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct QuotaTracker {
     policy: RateLimitPolicy,
     quotas: RwLock<HashMap<String, SourceQuota>>,
@@ -277,90 +279,90 @@ impl QuotaTracker {
     }
 
     pub fn record_request(&self, source: &str) {
-        if let Ok(mut q) = self.quotas.write() {
-            if let Some(quota) = q.get_mut(source) {
-                let now = Utc::now();
-                if let (Some(reset_at), Some(cap)) = (quota.reset_at, quota.cap) {
-                    if reset_at <= now {
-                        quota.used = 0;
-                        quota.remaining = Some(cap);
-                        quota.remaining_percent = Some(100.0);
-                        quota.status = QuotaStatus::Ok;
-                        quota.reset_at = quota.limit_window.duration().map(|window| {
-                            now + chrono::Duration::from_std(window).expect("valid quota window")
-                        });
-                    }
-                } else if quota.reset_at.is_none() {
+        if let Ok(mut q) = self.quotas.write()
+            && let Some(quota) = q.get_mut(source)
+        {
+            let now = Utc::now();
+            if let (Some(reset_at), Some(cap)) = (quota.reset_at, quota.cap) {
+                if reset_at <= now {
+                    quota.used = 0;
+                    quota.remaining = Some(cap);
+                    quota.remaining_percent = Some(100.0);
+                    quota.status = QuotaStatus::Ok;
                     quota.reset_at = quota.limit_window.duration().map(|window| {
                         now + chrono::Duration::from_std(window).expect("valid quota window")
                     });
                 }
+            } else if quota.reset_at.is_none() {
+                quota.reset_at = quota.limit_window.duration().map(|window| {
+                    now + chrono::Duration::from_std(window).expect("valid quota window")
+                });
+            }
 
-                quota.used += 1;
-                quota.last_request = Some(now);
+            quota.used += 1;
+            quota.last_request = Some(now);
 
-                // Update remaining if we have a cap
-                if let Some(cap) = quota.cap {
-                    if cap > 0 {
-                        quota.remaining = Some(cap.saturating_sub(quota.used));
-                        quota.remaining_percent =
-                            Some((quota.remaining.unwrap_or(0) as f64 / cap as f64) * 100.0);
+            // Update remaining if we have a cap
+            if let Some(cap) = quota.cap
+                && cap > 0
+            {
+                quota.remaining = Some(cap.saturating_sub(quota.used));
+                quota.remaining_percent =
+                    Some((quota.remaining.unwrap_or(0) as f64 / cap as f64) * 100.0);
 
-                        // Update status
-                        if let Some(pct) = quota.remaining_percent {
-                            quota.status = if pct <= self.policy.block_remaining_percent {
-                                QuotaStatus::QuotaProtected
-                            } else if pct <= self.policy.warn_remaining_percent {
-                                QuotaStatus::NearLimit
-                            } else {
-                                QuotaStatus::Ok
-                            };
-                        }
-                    }
+                // Update status
+                if let Some(pct) = quota.remaining_percent {
+                    quota.status = if pct <= self.policy.block_remaining_percent {
+                        QuotaStatus::QuotaProtected
+                    } else if pct <= self.policy.warn_remaining_percent {
+                        QuotaStatus::NearLimit
+                    } else {
+                        QuotaStatus::Ok
+                    };
                 }
             }
         }
     }
 
     pub fn record_success(&self, source: &str) {
-        if let Ok(mut q) = self.quotas.write() {
-            if let Some(quota) = q.get_mut(source) {
-                quota.last_success = Some(Utc::now());
-                // Clear rate-limited status on success
-                if quota.status == QuotaStatus::RateLimited {
-                    quota.status = QuotaStatus::Ok;
-                }
+        if let Ok(mut q) = self.quotas.write()
+            && let Some(quota) = q.get_mut(source)
+        {
+            quota.last_success = Some(Utc::now());
+            // Clear rate-limited status on success
+            if quota.status == QuotaStatus::RateLimited {
+                quota.status = QuotaStatus::Ok;
             }
         }
     }
 
     pub fn record_rate_limit_error(&self, source: &str, retry_after: Option<i64>) {
-        if let Ok(mut q) = self.quotas.write() {
-            if let Some(quota) = q.get_mut(source) {
-                quota.last_rate_limit_error = Some(Utc::now());
-                quota.status = QuotaStatus::RateLimited;
+        if let Ok(mut q) = self.quotas.write()
+            && let Some(quota) = q.get_mut(source)
+        {
+            quota.last_rate_limit_error = Some(Utc::now());
+            quota.status = QuotaStatus::RateLimited;
 
-                if let Some(after) = retry_after {
-                    let reset = Utc::now() + chrono::Duration::seconds(after);
-                    quota.reset_at = Some(reset);
-                }
+            if let Some(after) = retry_after {
+                let reset = Utc::now() + chrono::Duration::seconds(after);
+                quota.reset_at = Some(reset);
             }
         }
     }
 
     pub fn record_timeout(&self, source: &str) {
-        if let Ok(mut q) = self.quotas.write() {
-            if let Some(quota) = q.get_mut(source) {
-                quota.status = QuotaStatus::Timeout;
-            }
+        if let Ok(mut q) = self.quotas.write()
+            && let Some(quota) = q.get_mut(source)
+        {
+            quota.status = QuotaStatus::Timeout;
         }
     }
 
     pub fn record_error(&self, source: &str) {
-        if let Ok(mut q) = self.quotas.write() {
-            if let Some(quota) = q.get_mut(source) {
-                quota.status = QuotaStatus::Error;
-            }
+        if let Ok(mut q) = self.quotas.write()
+            && let Some(quota) = q.get_mut(source)
+        {
+            quota.status = QuotaStatus::Error;
         }
     }
 
