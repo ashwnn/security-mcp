@@ -1,4 +1,4 @@
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
 
 use anyhow::{Result, bail};
 use regex::Regex;
@@ -62,6 +62,11 @@ pub fn validate_public_url(url: &str, allow_private: bool) -> Result<Url> {
         bail!("unsupported URL scheme")
     }
 
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    if !allow_private && !matches!(port, 80 | 443) {
+        bail!("non-standard target ports are blocked")
+    }
+
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("missing host"))?;
@@ -71,6 +76,13 @@ pub fn validate_public_url(url: &str, allow_private: bool) -> Result<Url> {
         }
         if let Ok(ip) = host.parse::<IpAddr>() {
             validate_public_ip(ip)?;
+        } else {
+            let addrs = (host, port)
+                .to_socket_addrs()
+                .map_err(|_| anyhow::anyhow!("failed to resolve host"))?;
+            for addr in addrs {
+                validate_public_ip(addr.ip())?;
+            }
         }
     }
 
@@ -101,6 +113,9 @@ fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(v4) = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()) {
+        return is_blocked_ipv4(v4);
+    }
     ip.is_loopback()
         || ip.is_multicast()
         || ip.is_unspecified()
@@ -133,5 +148,16 @@ mod tests {
         assert!(validate_public_ip("127.0.0.1".parse().expect("ip")).is_err());
         assert!(validate_public_ip("169.254.169.254".parse().expect("ip")).is_err());
         assert!(validate_public_ip("8.8.8.8".parse().expect("ip")).is_ok());
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_is_blocked() {
+        assert!(is_blocked_ip("::ffff:127.0.0.1".parse().expect("ip")));
+        assert!(is_blocked_ip("::ffff:169.254.169.254".parse().expect("ip")));
+    }
+
+    #[test]
+    fn non_standard_ports_are_blocked() {
+        assert!(validate_public_url("https://example.com:8443", false).is_err());
     }
 }
