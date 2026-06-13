@@ -42,14 +42,7 @@ pub(super) fn success(
 
 pub(super) fn missing_key(source: &str, env_key: &str) -> ModuleRunResult {
     ModuleRunResult {
-        findings: vec![Finding {
-            title: format!("Source {source} not configured"),
-            severity: "low".to_string(),
-            confidence: "high".to_string(),
-            source: source.to_string(),
-            evidence: serde_json::json!({"configured": false, "required_env": env_key}),
-            analyst_note: format!("Set {env_key} to enable this source."),
-        }],
+        findings: vec![],
         sources: vec![SourceStatus {
             name: source.to_string(),
             status: "not_configured".to_string(),
@@ -57,24 +50,17 @@ pub(super) fn missing_key(source: &str, env_key: &str) -> ModuleRunResult {
             cached: false,
             error: Some("missing_api_key".to_string()),
         }],
-        raw: serde_json::json!({"configured": false}),
+        raw: serde_json::json!({
+            "configured": false,
+            "required_env": env_key,
+            "note": "source not configured; excluded from target risk scoring"
+        }),
     }
 }
 
 pub(super) fn source_error(source: &str, error: &str) -> ModuleRunResult {
     ModuleRunResult {
-        findings: vec![Finding {
-            title: format!("Source {source} query failed"),
-            severity: "medium".to_string(),
-            confidence: "medium".to_string(),
-            source: source.to_string(),
-            evidence: serde_json::json!({
-                "error_class": "source_request_error",
-                "message": error,
-            }),
-            analyst_note: "Treat this source as unavailable and confirm with alternate sources."
-                .to_string(),
-        }],
+        findings: vec![],
         sources: vec![SourceStatus {
             name: source.to_string(),
             status: "error".to_string(),
@@ -83,7 +69,9 @@ pub(super) fn source_error(source: &str, error: &str) -> ModuleRunResult {
             error: Some("source_request_error".to_string()),
         }],
         raw: serde_json::json!({
-            "error": "source_request_error"
+            "error": "source_request_error",
+            "message": error,
+            "note": "source failure; excluded from target risk scoring"
         }),
     }
 }
@@ -120,8 +108,8 @@ pub(super) fn calculate_risk_from_findings(findings: &[Finding]) -> RiskInfo {
         }
         .to_string(),
         reasoning: vec![
-            format!("{} findings contributed to score", findings.len()),
-            "Severity-weighted scoring with source confidence".to_string(),
+            format!("{} target findings contributed to score", findings.len()),
+            "Operational source failures and missing credentials are reported in source status, not target risk.".to_string(),
         ],
     }
 }
@@ -204,5 +192,11 @@ mod tests {
         ];
         let risk = calculate_risk_from_findings(&findings);
         assert!(risk.score >= 20);
+    }
+
+    #[test]
+    fn source_health_does_not_create_target_findings() {
+        assert!(missing_key("virustotal", "VIRUSTOTAL_API_KEY").findings.is_empty());
+        assert!(source_error("nvd", "timeout").findings.is_empty());
     }
 }
