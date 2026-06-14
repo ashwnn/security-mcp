@@ -87,6 +87,11 @@ where
         bail!("unsupported URL scheme")
     }
 
+    let port = parsed.port_or_known_default().unwrap_or(80);
+    if !allow_private && !matches!(port, 80 | 443) {
+        bail!("non-standard target ports are blocked")
+    }
+
     let host = parsed
         .host_str()
         .ok_or_else(|| anyhow::anyhow!("missing host"))?;
@@ -97,7 +102,6 @@ where
         if let Ok(ip) = host.parse::<IpAddr>() {
             validate_public_ip(ip)?;
         } else {
-            let port = parsed.port_or_known_default().unwrap_or(80);
             let addrs = resolver(host, port).await?;
             for addr in addrs {
                 validate_public_ip(addr.ip())?;
@@ -183,5 +187,14 @@ mod tests {
     fn ipv4_mapped_ipv6_is_blocked() {
         assert!(is_blocked_ip("::ffff:127.0.0.1".parse().expect("ip")));
         assert!(is_blocked_ip("::ffff:169.254.169.254".parse().expect("ip")));
+    }
+
+    #[tokio::test]
+    async fn non_standard_ports_are_blocked() {
+        let err = validate_public_url_with_resolver("https://example.test:8443", false, |_host, _port| {
+            Box::pin(async { Ok(vec!["93.184.216.34:8443".parse().expect("socket addr")]) })
+        })
+        .await;
+        assert!(err.is_err());
     }
 }
