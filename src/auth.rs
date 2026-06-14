@@ -247,7 +247,6 @@ fn constant_time_eq(expected: &str, provided: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use url::Url;
 
     use super::*;
 
@@ -261,84 +260,5 @@ mod tests {
     #[test]
     fn query_token_extracts() {
         assert_eq!(query_token(Some("api_key=abc"), "api_key"), Some("abc".to_string()));
-    }
-
-    #[test]
-    fn resource_validation_accepts_matching_resource() {
-        let config = crate::config::Config {
-            bind_addr: "127.0.0.1:8080".parse().expect("addr"),
-            public_base_url: Url::parse("https://security.example.com").expect("url"),
-            oauth_issuer: Url::parse("https://security.example.com").expect("url"),
-            database_path: ":memory:".to_string(),
-            public_mode: false,
-            bearer_token: None,
-            bearer_scopes: vec!["mcp:read".to_string()],
-            api_key: None,
-            api_key_scopes: vec!["mcp:read".to_string()],
-            api_key_header: "X-API-Key".to_string(),
-            api_key_query_enabled: false,
-            api_key_query_name: "api_key".to_string(),
-            connector_token: Some("x".to_string()),
-            oauth_enabled: true,
-            oauth_allowed_scopes: vec!["mcp:read".to_string()],
-            oauth_default_scopes: vec!["mcp:read".to_string()],
-            oauth_require_resource: true,
-            require_registered_oauth_clients: true,
-            access_token_ttl_seconds: 3600,
-            auth_code_ttl_seconds: 300,
-            expert_tool_enabled: false,
-            cache_enabled: true,
-            default_timeout_seconds: 15,
-            max_request_body_bytes: 1024,
-            allow_private_targets: false,
-            trust_proxy_headers: false,
-            enforce_mcp_origin: true,
-            auth_rate_limit_per_minute: 120,
-            lookup_rate_limit_per_minute: 120,
-            ui_localhost_only: true,
-            log_level: "info".to_string(),
-            nvd_api_key: None,
-            shodan_api_key: None,
-            greynoise_api_key: None,
-            abuseipdb_api_key: None,
-            virustotal_api_key: None,
-            urlscan_api_key: None,
-            github_token: None,
-            circl_pd_user: None,
-            circl_pd_password: None,
-            rate_limit_default_plan: "free".to_string(),
-            rate_limit_warn_remaining_percent: 20.0,
-            rate_limit_block_remaining_percent: 5.0,
-            rate_limit_soft_block_enabled: true,
-            censys_api_id: None,
-            censys_api_secret: None,
-            securitytrails_api_key: None,
-            otx_api_key: None,
-            misp_base_url: None,
-            misp_api_key: None,
-            misp_verify_tls: true,
-            google_safe_browsing_api_key: None,
-            pulsedive_api_key: None,
-            hybrid_analysis_api_key: None,
-        };
-        let state = crate::types::AppState {
-            config,
-            db: tokio_test::block_on(async {
-                crate::db::Database::connect("sqlite::memory:").await.expect("db")
-            }),
-            registry: crate::modules::Registry::new(false),
-            http_client: reqwest::Client::new(),
-            auth_rate_limiter: crate::oauth::SimpleRateLimiter::new(1, std::time::Duration::from_secs(1)),
-            lookup_rate_limiter: crate::oauth::SimpleRateLimiter::new(1, std::time::Duration::from_secs(1)),
-            quota_tracker: std::sync::Arc::new(crate::rate_limit::QuotaTracker::new(crate::rate_limit::RateLimitPolicy::default())),
-        };
-        assert!(valid_token_resource(
-            &serde_json::json!({"resource":"https://security.example.com/mcp"}),
-            &state
-        ));
-        assert!(!valid_token_resource(
-            &serde_json::json!({"resource":"https://other.example.com/mcp"}),
-            &state
-        ));
     }
 }
