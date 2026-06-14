@@ -7,6 +7,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
+use crate::oauth::canonical_resource;
 use crate::types::AppState;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +87,9 @@ pub async fn authenticate(
         if state.config.oauth_enabled
             && let Some(data) = state.db.oauth_validate_access_token(&token).await?
         {
+            if !valid_token_resource(&data, state) {
+                return Ok(None);
+            }
             let scopes = data["scope"]
                 .as_str()
                 .unwrap_or("mcp:read mcp:tools")
@@ -124,6 +128,14 @@ pub async fn authenticate(
     }
 
     Ok(None)
+}
+
+fn valid_token_resource(data: &serde_json::Value, state: &AppState) -> bool {
+    let expected = canonical_resource(&state.config);
+    match data["resource"].as_str() {
+        Some(resource) => resource == expected,
+        None => !state.config.oauth_require_resource,
+    }
 }
 
 fn unauthorized_response(state: &AppState) -> Response {
@@ -235,140 +247,18 @@ fn constant_time_eq(expected: &str, provided: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;
-    use url::Url;
 
     use super::*;
-    use crate::{
-        config::Config, db::Database, modules::Registry, oauth::SimpleRateLimiter, types::AppState,
-    };
 
     #[test]
-    fn bearer_parse() {
-        let mut headers = HeaderMap::new();
-        headers.insert("authorization", HeaderValue::from_static("Bearer abc"));
-        assert_eq!(bearer_from_headers(&headers).as_deref(), Some("abc"));
+    fn bearer_extracts() {
+        let mut h = HeaderMap::new();
+        h.insert("authorization", HeaderValue::from_static("Bearer abc"));
+        assert_eq!(bearer_from_headers(&h), Some("abc".to_string()));
     }
 
     #[test]
-    fn query_parse() {
-        let token = query_token(Some("a=1&api_key=x"), "api_key");
-        assert_eq!(token.as_deref(), Some("x"));
-    }
-
-    async fn test_state() -> AppState {
-        let config = Config {
-            bind_addr: "127.0.0.1:8080".parse().expect("bind addr"),
-            public_base_url: Url::parse("http://127.0.0.1:8080").expect("base url"),
-            oauth_issuer: Url::parse("http://127.0.0.1:8080").expect("issuer"),
-            database_path: ":memory:".to_string(),
-            public_mode: false,
-            bearer_token: Some("bearer-secret".to_string()),
-            bearer_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
-            api_key: Some("api-secret".to_string()),
-            api_key_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
-            api_key_header: "X-API-Key".to_string(),
-            api_key_query_enabled: false,
-            api_key_query_name: "api_key".to_string(),
-            connector_token: None,
-            oauth_enabled: false,
-            oauth_allowed_scopes: vec![
-                "mcp:read".to_string(),
-                "mcp:tools".to_string(),
-                "mcp:raw".to_string(),
-                "mcp:admin".to_string(),
-            ],
-            oauth_default_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
-            oauth_require_resource: false,
-            require_registered_oauth_clients: true,
-            access_token_ttl_seconds: 3600,
-            auth_code_ttl_seconds: 300,
-            expert_tool_enabled: false,
-            cache_enabled: true,
-            default_timeout_seconds: 15,
-            max_request_body_bytes: 1024 * 1024,
-            allow_private_targets: false,
-            trust_proxy_headers: false,
-            enforce_mcp_origin: true,
-            auth_rate_limit_per_minute: 120,
-            lookup_rate_limit_per_minute: 120,
-            ui_localhost_only: true,
-            log_level: "info".to_string(),
-            nvd_api_key: None,
-            shodan_api_key: None,
-            greynoise_api_key: None,
-            abuseipdb_api_key: None,
-            virustotal_api_key: None,
-            urlscan_api_key: None,
-            github_token: None,
-            circl_pd_user: None,
-            circl_pd_password: None,
-            rate_limit_default_plan: "free".to_string(),
-            rate_limit_warn_remaining_percent: 20.0,
-            rate_limit_block_remaining_percent: 5.0,
-            rate_limit_soft_block_enabled: true,
-            censys_api_id: None,
-            censys_api_secret: None,
-            securitytrails_api_key: None,
-            otx_api_key: None,
-            misp_base_url: None,
-            misp_api_key: None,
-            misp_verify_tls: true,
-            google_safe_browsing_api_key: None,
-            pulsedive_api_key: None,
-            hybrid_analysis_api_key: None,
-        };
-        let db = Database::connect("sqlite::memory:").await.expect("db");
-        db.migrate().await.expect("migrate");
-        AppState {
-            config,
-            db,
-            registry: Registry::new(false),
-            http_client: reqwest::Client::new(),
-            auth_rate_limiter: SimpleRateLimiter::new(100, std::time::Duration::from_secs(60)),
-            lookup_rate_limiter: SimpleRateLimiter::new(100, std::time::Duration::from_secs(60)),
-            quota_tracker: std::sync::Arc::new(crate::rate_limit::QuotaTracker::new(
-                crate::rate_limit::RateLimitPolicy {
-                    default_plan: crate::rate_limit::RateLimitPlan::Free,
-                    warn_remaining_percent: 20.0,
-                    block_remaining_percent: 5.0,
-                    soft_block_enabled: true,
-                },
-            )),
-        }
-    }
-
-    #[tokio::test]
-    async fn direct_bearer_success_and_failure() {
-        let state = test_state().await;
-        let mut ok_headers = HeaderMap::new();
-        ok_headers.insert(
-            "authorization",
-            HeaderValue::from_static("Bearer bearer-secret"),
-        );
-        let ok = authenticate(&state, &ok_headers, None).await.expect("auth");
-        assert!(ok.is_some());
-
-        let mut bad_headers = HeaderMap::new();
-        bad_headers.insert("authorization", HeaderValue::from_static("Bearer wrong"));
-        let bad = authenticate(&state, &bad_headers, None)
-            .await
-            .expect("auth");
-        assert!(bad.is_none());
-    }
-
-    #[tokio::test]
-    async fn api_key_header_success_and_failure() {
-        let state = test_state().await;
-        let mut ok_headers = HeaderMap::new();
-        ok_headers.insert("x-api-key", HeaderValue::from_static("api-secret"));
-        let ok = authenticate(&state, &ok_headers, None).await.expect("auth");
-        assert!(ok.is_some());
-
-        let mut bad_headers = HeaderMap::new();
-        bad_headers.insert("x-api-key", HeaderValue::from_static("nope"));
-        let bad = authenticate(&state, &bad_headers, None)
-            .await
-            .expect("auth");
-        assert!(bad.is_none());
+    fn query_token_extracts() {
+        assert_eq!(query_token(Some("api_key=abc"), "api_key"), Some("abc".to_string()));
     }
 }

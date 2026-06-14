@@ -1,0 +1,66 @@
+name: Rust CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Report formatting
+        id: fmt
+        shell: bash
+        run: |
+          set +e
+          cargo fmt --check 2>&1 | tee ci-fmt.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Run clippy
+        id: clippy
+        shell: bash
+        run: |
+          set +e
+          cargo clippy --workspace --all-targets -- -D warnings 2>&1 | tee ci-clippy.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Run tests
+        id: tests
+        shell: bash
+        run: |
+          set +e
+          cargo test --workspace 2>&1 | tee ci-tests.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Build release
+        id: build
+        shell: bash
+        run: |
+          set +e
+          cargo build --release 2>&1 | tee ci-build.log
+          status=${PIPESTATUS[0]}
+          echo "status=${status}" >> "$GITHUB_OUTPUT"
+          exit 0
+      - name: Upload CI logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci-*.log
+      - name: Fail if checks failed
+        if: steps.fmt.outputs.status != '0' || steps.clippy.outputs.status != '0' || steps.tests.outputs.status != '0' || steps.build.outputs.status != '0'
+        run: exit 1

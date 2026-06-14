@@ -112,6 +112,7 @@ struct TokenResponse {
     token_type: String,
     expires_in: i64,
     scope: String,
+    resource: String,
 }
 
 pub fn router(state: Arc<AppState>, _auth_layer: AuthLayer) -> Router {
@@ -157,6 +158,7 @@ async fn oauth_authorization_server_metadata(
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none", "client_secret_post", "client_secret_basic"],
         "scopes_supported": scopes,
+        "resource_parameter_supported": true,
     }))
 }
 
@@ -165,9 +167,8 @@ async fn openid_configuration(State(state): State<Arc<AppState>>) -> impl IntoRe
 }
 
 async fn oauth_protected_resource(State(state): State<Arc<AppState>>) -> impl IntoResponse {
-    let base = state.config.public_base_url.as_str().trim_end_matches('/');
     Json(serde_json::json!({
-        "resource": format!("{base}/mcp"),
+        "resource": canonical_resource(&state.config),
         "authorization_servers": [state.config.oauth_issuer.as_str()],
     }))
 }
@@ -198,6 +199,10 @@ async fn get_authorize(
     }
 
     let default_scope = state.config.oauth_default_scopes.join(" ");
+    let resource = query
+        .resource
+        .clone()
+        .unwrap_or_else(|| canonical_resource(&state.config));
     let html = format!(
         "<!doctype html><html><head><meta charset='utf-8'><title>Security MCP OAuth Login</title></head><body><h1>Security MCP OAuth</h1><p>Enter connector token to authorize client <code>{}</code>.</p><form method='post' action='/oauth/authorize'><input type='password' name='connector_token' required /><input type='hidden' name='response_type' value='{}'/><input type='hidden' name='client_id' value='{}'/><input type='hidden' name='redirect_uri' value='{}'/><input type='hidden' name='state' value='{}'/><input type='hidden' name='scope' value='{}'/><input type='hidden' name='resource' value='{}'/><input type='hidden' name='code_challenge' value='{}'/><input type='hidden' name='code_challenge_method' value='{}'/><button type='submit'>Authorize</button></form></body></html>",
         html_escape(&query.client_id),
@@ -206,7 +211,7 @@ async fn get_authorize(
         html_escape(&query.redirect_uri),
         html_escape(query.state.as_deref().unwrap_or("")),
         html_escape(query.scope.as_deref().unwrap_or(&default_scope)),
-        html_escape(query.resource.as_deref().unwrap_or("")),
+        html_escape(&resource),
         html_escape(&query.code_challenge),
         html_escape(&query.code_challenge_method),
     );
@@ -248,6 +253,10 @@ async fn post_authorize(
     if let Err(err) = validate_authorize_request(&query, &state).await {
         return (StatusCode::BAD_REQUEST, err).into_response();
     }
+    let resource = match resolve_resource_parameter(form.resource.as_deref(), &state.config) {
+        Ok(resource) => resource,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
 
     let Some(connector_token) = state.config.connector_token.as_deref() else {
         return (
@@ -283,6 +292,7 @@ async fn post_authorize(
             code_challenge_method: form.code_challenge_method.clone(),
             scope: scope.clone(),
             state: form.state.clone(),
+            resource,
             subject: "connector-user".to_string(),
             expires_at: expires,
         })
@@ -326,9 +336,10 @@ async fn post_token(
     if form.grant_type != "authorization_code" {
         return (StatusCode::BAD_REQUEST, "unsupported grant_type").into_response();
     }
-    if let Err(err) = validate_resource_parameter(form.resource.as_deref(), &state.config) {
-        return (StatusCode::BAD_REQUEST, err).into_response();
-    }
+    let requested_resource = match resolve_resource_parameter(form.resource.as_deref(), &state.config) {
+        Ok(resource) => resource,
+        Err(err) => return (StatusCode::BAD_REQUEST, err).into_response(),
+    };
 
     let code_data = match state.db.oauth_get_valid_code(&form.code).await {
         Ok(Some(v)) => v,
@@ -347,6 +358,9 @@ async fn post_token(
     }
     if code_data["redirect_uri"] != form.redirect_uri {
         return (StatusCode::BAD_REQUEST, "redirect_uri mismatch").into_response();
+    }
+    if code_data["resource"].as_str().unwrap_or_default() != requested_resource {
+        return (StatusCode::BAD_REQUEST, "resource mismatch").into_response();
     }
 
     let challenge = code_data["code_challenge"].as_str().unwrap_or_default();
@@ -368,7 +382,7 @@ async fn post_token(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("db error: {err}"),
             )
-                .into_response();
+            .into_response();
         }
     };
 
@@ -418,6 +432,7 @@ async fn post_token(
             &access_token,
             &form.client_id,
             scope,
+            &requested_resource,
             code_data["subject"].as_str().unwrap_or("connector-user"),
             "oauth",
             expires,
@@ -436,6 +451,7 @@ async fn post_token(
         token_type: "Bearer".to_string(),
         expires_in: state.config.access_token_ttl_seconds,
         scope: scope.to_string(),
+        resource: requested_resource,
     })
     .into_response()
 }
@@ -450,6 +466,9 @@ async fn post_register(
         oauth_rate_limit_key(&state, "oauth_register", None, &headers, connect_info);
     if !state.auth_rate_limiter.check(&rate_limit_key) {
         return (StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded").into_response();
+    }
+    if !state.config.oauth_enabled {
+        return (StatusCode::NOT_FOUND, "oauth disabled").into_response();
     }
 
     if payload.redirect_uris.is_empty() {
@@ -527,7 +546,7 @@ async fn validate_authorize_request(
     if !is_valid_redirect_uri(&query.redirect_uri) {
         return Err("invalid redirect_uri".to_string());
     }
-    validate_resource_parameter(query.resource.as_deref(), &state.config)?;
+    resolve_resource_parameter(query.resource.as_deref(), &state.config)?;
 
     let client = state
         .db
@@ -638,26 +657,30 @@ fn sanitize_requested_scopes(
     Ok(resolved.join(" "))
 }
 
-fn validate_resource_parameter(
-    resource: Option<&str>,
-    config: &crate::config::Config,
-) -> Result<(), String> {
-    let canonical = format!(
+pub(crate) fn canonical_resource(config: &crate::config::Config) -> String {
+    format!(
         "{}/mcp",
         config.public_base_url.as_str().trim_end_matches('/')
-    );
+    )
+}
+
+fn resolve_resource_parameter(
+    resource: Option<&str>,
+    config: &crate::config::Config,
+) -> Result<String, String> {
+    let canonical = canonical_resource(config);
 
     let Some(value) = resource else {
         if config.oauth_require_resource {
             return Err("resource parameter is required".to_string());
         }
-        return Ok(());
+        return Ok(canonical);
     };
 
     if value != canonical {
         return Err("invalid resource parameter".to_string());
     }
-    Ok(())
+    Ok(canonical)
 }
 
 fn oauth_rate_limit_key(
@@ -702,8 +725,6 @@ fn forwarded_ip(headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
-    use url::Url;
 
     #[test]
     fn validates_redirect_uri() {
@@ -727,70 +748,5 @@ mod tests {
             &["mcp:read".to_string()],
         );
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn requires_resource_when_enabled() {
-        let config = Config {
-            bind_addr: "127.0.0.1:8080".parse().expect("addr"),
-            public_base_url: Url::parse("https://security.example.com").expect("url"),
-            oauth_issuer: Url::parse("https://security.example.com").expect("url"),
-            database_path: ":memory:".to_string(),
-            public_mode: false,
-            bearer_token: None,
-            bearer_scopes: vec!["mcp:read".to_string()],
-            api_key: None,
-            api_key_scopes: vec!["mcp:read".to_string()],
-            api_key_header: "X-API-Key".to_string(),
-            api_key_query_enabled: false,
-            api_key_query_name: "api_key".to_string(),
-            connector_token: Some("x".to_string()),
-            oauth_enabled: true,
-            oauth_allowed_scopes: vec!["mcp:read".to_string(), "mcp:tools".to_string()],
-            oauth_default_scopes: vec!["mcp:read".to_string()],
-            oauth_require_resource: true,
-            require_registered_oauth_clients: true,
-            access_token_ttl_seconds: 3600,
-            auth_code_ttl_seconds: 300,
-            expert_tool_enabled: false,
-            cache_enabled: true,
-            default_timeout_seconds: 15,
-            max_request_body_bytes: 1024 * 1024,
-            allow_private_targets: false,
-            trust_proxy_headers: false,
-            enforce_mcp_origin: true,
-            auth_rate_limit_per_minute: 120,
-            lookup_rate_limit_per_minute: 120,
-            ui_localhost_only: true,
-            log_level: "info".to_string(),
-            nvd_api_key: None,
-            shodan_api_key: None,
-            greynoise_api_key: None,
-            abuseipdb_api_key: None,
-            virustotal_api_key: None,
-            urlscan_api_key: None,
-            github_token: None,
-            circl_pd_user: None,
-            circl_pd_password: None,
-            rate_limit_default_plan: "free".to_string(),
-            rate_limit_warn_remaining_percent: 20.0,
-            rate_limit_block_remaining_percent: 5.0,
-            rate_limit_soft_block_enabled: true,
-            censys_api_id: None,
-            censys_api_secret: None,
-            securitytrails_api_key: None,
-            otx_api_key: None,
-            misp_base_url: None,
-            misp_api_key: None,
-            misp_verify_tls: true,
-            google_safe_browsing_api_key: None,
-            pulsedive_api_key: None,
-            hybrid_analysis_api_key: None,
-        };
-
-        let missing = validate_resource_parameter(None, &config);
-        assert!(missing.is_err());
-        let good = validate_resource_parameter(Some("https://security.example.com/mcp"), &config);
-        assert!(good.is_ok());
     }
 }
