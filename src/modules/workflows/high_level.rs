@@ -447,8 +447,9 @@ async fn run_module(
         }
         Err(err) => {
             let err_text = err.to_string();
-            let timeout_count = i64::from(err_text.to_ascii_lowercase().contains("timeout"));
-            let rate_limit_count = i64::from(err_text.to_ascii_lowercase().contains("rate limit"));
+            let err_lower = err_text.to_ascii_lowercase();
+            let timeout_count = if err_lower.contains("timeout") { 1 } else { 0 };
+            let rate_limit_count = if err_lower.contains("rate limit") { 1 } else { 0 };
             let _ = state.db.source_mark_error(module_id, &err_text).await;
             let _ = state
                 .db
@@ -555,7 +556,10 @@ fn workflow_options(
     })
 }
 
-fn cve_modules(input: &CveInvestigationInput, opts: &WorkflowOptions) -> (Vec<&'static str>, Vec<String>) {
+fn cve_modules(
+    input: &CveInvestigationInput,
+    opts: &WorkflowOptions,
+) -> (Vec<&'static str>, Vec<String>) {
     let mut modules = vec!["lookup_cve", "get_cvss_details", "get_cwe_info"];
     if input.include_vendor_advisories && opts.depth != "quick" {
         modules.push("get_cve_references");
@@ -698,7 +702,7 @@ fn filter_modules(modules: Vec<&'static str>, requested: &[String]) -> (Vec<&'st
     let filtered = modules
         .into_iter()
         .filter(|module| {
-            let names = module_match_names(module);
+            let names = module_match_names(*module);
             let is_match = names.iter().any(|name| requested_set.contains(*name));
             if is_match {
                 for name in names {
@@ -718,7 +722,7 @@ fn filter_modules(modules: Vec<&'static str>, requested: &[String]) -> (Vec<&'st
     (filtered, unknowns)
 }
 
-fn module_match_names(module: &str) -> Vec<&'static str> {
+fn module_match_names(module: &'static str) -> Vec<&'static str> {
     match module {
         "lookup_cve" | "get_cvss_details" | "get_cwe_info" | "get_cve_references" => {
             vec![module, "nvd"]
@@ -733,7 +737,9 @@ fn module_match_names(module: &str) -> Vec<&'static str> {
         "passive_dns_lookup" => vec![module, "circl_passive_dns", "passive_dns"],
         "asn_lookup" | "rdap_lookup" => vec![module, "rdap"],
         "dns_records_lookup" => vec![module, "dns", "dns_over_https"],
-        "domain_subdomain_enum" | "tls_certificate_lookup" => vec![module, "crtsh", "certificate_transparency"],
+        "domain_subdomain_enum" | "tls_certificate_lookup" => {
+            vec![module, "crtsh", "certificate_transparency"]
+        }
         "http_headers_lookup" => vec![module, "http", "headers"],
         "technology_fingerprint" | "cloud_hosting_hint" => vec![module, "heuristic"],
         "virustotal_lookup" => vec![module, "virustotal"],
