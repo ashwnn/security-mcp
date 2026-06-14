@@ -1,8 +1,12 @@
+use std::time::Duration;
+
 use anyhow::{Result, bail};
+use reqwest::redirect::Policy;
 use serde_json::Value;
 
 use super::common::{ModuleRunResult, missing_key, success};
 use crate::validation::validate_public_url;
+
 pub(super) async fn abuseipdb_lookup(
     state: &crate::types::AppState,
     ip: &str,
@@ -208,7 +212,13 @@ pub(super) async fn http_headers_lookup(
         format!("https://{target}")
     };
     validate_public_url(&url, state.config.allow_private_targets).await?;
-    let resp = state.http_client.get(url).send().await?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(state.config.default_timeout_seconds))
+        .user_agent("security-mcp/0.1.0")
+        .redirect(Policy::none())
+        .build()?;
+    let resp = client.head(&url).send().await?;
     let status = resp.status().as_u16();
     let mut headers = std::collections::BTreeMap::new();
     for (k, v) in resp.headers() {
@@ -221,8 +231,8 @@ pub(super) async fn http_headers_lookup(
         "http",
         "HTTP response headers",
         "low",
-        serde_json::json!({"status": status, "headers": headers}),
-        serde_json::json!({"status": status, "headers": headers}),
+        serde_json::json!({"status": status, "headers": headers, "method": "HEAD", "redirect_followed": false}),
+        serde_json::json!({"status": status, "headers": headers, "method": "HEAD", "redirect_followed": false}),
     ))
 }
 
