@@ -93,6 +93,12 @@ pub struct CveInvestigationInput {
     #[serde(default = "default_true")]
     pub include_vendor_advisories: bool,
     #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub depth: Option<String>,
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
+    #[serde(default)]
     pub output_mode: Option<String>,
 }
 
@@ -109,6 +115,12 @@ pub struct IndicatorInvestigationInput {
     pub include_malware: bool,
     #[serde(default = "default_true")]
     pub include_url_safety: bool,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub depth: Option<String>,
+    #[serde(default)]
+    pub sources: Option<Vec<String>>,
     #[serde(default)]
     pub output_mode: Option<String>,
 }
