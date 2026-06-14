@@ -43,6 +43,7 @@ pub struct OauthCodeRecord {
     pub code_challenge_method: String,
     pub scope: String,
     pub state: Option<String>,
+    pub resource: String,
     pub subject: String,
     pub expires_at: DateTime<Utc>,
 }
@@ -69,8 +70,8 @@ impl Database {
             "CREATE TABLE IF NOT EXISTS cache_entries (key TEXT PRIMARY KEY, module_id TEXT NOT NULL, target TEXT NOT NULL, value_json TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS audit_events (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, request_id TEXT NOT NULL, tool TEXT NOT NULL, target TEXT NOT NULL, target_type TEXT NOT NULL, sources_requested TEXT NOT NULL, sources_used TEXT NOT NULL, cache_hit INTEGER NOT NULL, duration_ms INTEGER NOT NULL, status TEXT NOT NULL, error_class TEXT, auth_method TEXT NOT NULL)",
             "CREATE TABLE IF NOT EXISTS oauth_clients (client_id TEXT PRIMARY KEY, client_secret_hash TEXT, redirect_uris_json TEXT NOT NULL, auth_method TEXT NOT NULL, created_at TEXT NOT NULL)",
-            "CREATE TABLE IF NOT EXISTS oauth_auth_codes (code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL, code_challenge_method TEXT NOT NULL, scope TEXT NOT NULL, state TEXT, subject TEXT NOT NULL, expires_at TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)",
-            "CREATE TABLE IF NOT EXISTS oauth_access_tokens (token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL, subject TEXT NOT NULL, auth_method TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS oauth_auth_codes (code_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, redirect_uri TEXT NOT NULL, code_challenge TEXT NOT NULL, code_challenge_method TEXT NOT NULL, scope TEXT NOT NULL, state TEXT, resource TEXT, subject TEXT NOT NULL, expires_at TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0)",
+            "CREATE TABLE IF NOT EXISTS oauth_access_tokens (token_hash TEXT PRIMARY KEY, client_id TEXT NOT NULL, scope TEXT NOT NULL, resource TEXT, subject TEXT NOT NULL, auth_method TEXT NOT NULL, expires_at TEXT NOT NULL, created_at TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE IF NOT EXISTS source_health (source_name TEXT PRIMARY KEY, last_success_at TEXT, last_error_at TEXT, last_error TEXT)",
             "CREATE TABLE IF NOT EXISTS source_usage (source TEXT NOT NULL, window TEXT NOT NULL, request_count INTEGER DEFAULT 0, success_count INTEGER DEFAULT 0, error_count INTEGER DEFAULT 0, timeout_count INTEGER DEFAULT 0, rate_limit_count INTEGER DEFAULT 0, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, reset_estimate TEXT, PRIMARY KEY (source, window))",
         ];
@@ -81,6 +82,13 @@ impl Database {
                 .await
                 .with_context(|| format!("migration failed for statement: {statement}"))?;
         }
+
+        let _ = sqlx::query("ALTER TABLE oauth_auth_codes ADD COLUMN resource TEXT")
+            .execute(&self.pool)
+            .await;
+        let _ = sqlx::query("ALTER TABLE oauth_access_tokens ADD COLUMN resource TEXT")
+            .execute(&self.pool)
+            .await;
         Ok(())
     }
 
@@ -247,7 +255,7 @@ impl Database {
 
     pub async fn oauth_store_code(&self, record: OauthCodeRecord) -> anyhow::Result<()> {
         let code_hash = hash_secret(&record.code);
-        sqlx::query("INSERT INTO oauth_auth_codes (code_hash, client_id, redirect_uri, code_challenge, code_challenge_method, scope, state, subject, expires_at, consumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)")
+        sqlx::query("INSERT INTO oauth_auth_codes (code_hash, client_id, redirect_uri, code_challenge, code_challenge_method, scope, state, resource, subject, expires_at, consumed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)")
             .bind(code_hash)
             .bind(record.client_id)
             .bind(record.redirect_uri)
@@ -255,6 +263,7 @@ impl Database {
             .bind(record.code_challenge_method)
             .bind(record.scope)
             .bind(record.state)
+            .bind(record.resource)
             .bind(record.subject)
             .bind(record.expires_at.to_rfc3339())
             .execute(&self.pool)
@@ -267,7 +276,7 @@ impl Database {
         code: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
         let code_hash = hash_secret(code);
-        let row = sqlx::query("SELECT client_id, redirect_uri, code_challenge, code_challenge_method, scope, state, subject, expires_at, consumed FROM oauth_auth_codes WHERE code_hash = ?")
+        let row = sqlx::query("SELECT client_id, redirect_uri, code_challenge, code_challenge_method, scope, state, resource, subject, expires_at, consumed FROM oauth_auth_codes WHERE code_hash = ?")
             .bind(code_hash.clone())
             .fetch_optional(&self.pool)
             .await?;
@@ -289,6 +298,7 @@ impl Database {
             "code_challenge_method": row.get::<String, _>("code_challenge_method"),
             "scope": row.get::<String, _>("scope"),
             "state": row.get::<Option<String>, _>("state"),
+            "resource": row.get::<Option<String>, _>("resource"),
             "subject": row.get::<String, _>("subject"),
         })))
     }
@@ -309,15 +319,17 @@ impl Database {
         token: &str,
         client_id: &str,
         scope: &str,
+        resource: &str,
         subject: &str,
         auth_method: &str,
         expires_at: DateTime<Utc>,
     ) -> anyhow::Result<()> {
         let token_hash = hash_secret(token);
-        sqlx::query("INSERT INTO oauth_access_tokens (token_hash, client_id, scope, subject, auth_method, expires_at, created_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, 0)")
+        sqlx::query("INSERT INTO oauth_access_tokens (token_hash, client_id, scope, resource, subject, auth_method, expires_at, created_at, revoked) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)")
             .bind(token_hash)
             .bind(client_id)
             .bind(scope)
+            .bind(resource)
             .bind(subject)
             .bind(auth_method)
             .bind(expires_at.to_rfc3339())
@@ -331,7 +343,7 @@ impl Database {
         &self,
         token: &str,
     ) -> anyhow::Result<Option<serde_json::Value>> {
-        let row = sqlx::query("SELECT client_id, scope, subject, auth_method, expires_at, revoked FROM oauth_access_tokens WHERE token_hash = ?")
+        let row = sqlx::query("SELECT client_id, scope, resource, subject, auth_method, expires_at, revoked FROM oauth_access_tokens WHERE token_hash = ?")
             .bind(hash_secret(token))
             .fetch_optional(&self.pool)
             .await?;
@@ -352,6 +364,7 @@ impl Database {
         Ok(Some(serde_json::json!({
             "client_id": row.get::<String, _>("client_id"),
             "scope": row.get::<String, _>("scope"),
+            "resource": row.get::<Option<String>, _>("resource"),
             "subject": row.get::<String, _>("subject"),
             "auth_method": row.get::<String, _>("auth_method"),
             "expires_at": expires_at.to_rfc3339(),
@@ -393,7 +406,6 @@ impl Database {
         Ok(out)
     }
 
-    #[allow(dead_code)]
     #[allow(clippy::too_many_arguments)]
     pub async fn source_usage_record(
         &self,
@@ -405,7 +417,7 @@ impl Database {
         timeout_count: i64,
         rate_limit_count: i64,
     ) -> anyhow::Result<()> {
-        sqlx::query("INSERT INTO source_usage (source, window, request_count, success_count, error_count, timeout_count, rate_limit_count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, window) DO UPDATE SET request_count = excluded.request_count, success_count = excluded.success_count, error_count = excluded.error_count, timeout_count = excluded.timeout_count, rate_limit_count = excluded.rate_limit_count, last_seen = excluded.last_seen")
+        sqlx::query("INSERT INTO source_usage (source, window, request_count, success_count, error_count, timeout_count, rate_limit_count, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(source, window) DO UPDATE SET request_count = source_usage.request_count + excluded.request_count, success_count = source_usage.success_count + excluded.success_count, error_count = source_usage.error_count + excluded.error_count, timeout_count = source_usage.timeout_count + excluded.timeout_count, rate_limit_count = source_usage.rate_limit_count + excluded.rate_limit_count, last_seen = excluded.last_seen")
             .bind(source)
             .bind(window)
             .bind(request_count)
@@ -496,5 +508,20 @@ mod tests {
 
         let rows = db.audit_list(10).await.expect("list");
         assert_eq!(rows.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn source_usage_accumulates() {
+        let db = Database::connect("sqlite::memory:").await.expect("db");
+        db.migrate().await.expect("migrate");
+        db.source_usage_record("nvd", "test-window", 1, 1, 0, 0, 0)
+            .await
+            .expect("record 1");
+        db.source_usage_record("nvd", "test-window", 1, 0, 1, 0, 0)
+            .await
+            .expect("record 2");
+        let rows = db.source_usage_list().await.expect("list");
+        assert_eq!(rows[0]["request_count"], 2);
+        assert_eq!(rows[0]["error_count"], 1);
     }
 }
