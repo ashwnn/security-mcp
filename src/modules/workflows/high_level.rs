@@ -1,4 +1,7 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
+use chrono::Utc;
 use serde_json::Value;
 
 use super::common::{
@@ -28,6 +31,14 @@ use crate::types::{
 use crate::validation::{
     TargetKind, detect_target_kind, validate_cve_id, validate_public_ip, validate_public_url,
 };
+
+#[derive(Debug, Clone)]
+struct WorkflowOptions {
+    mode: String,
+    depth: String,
+    sources: Vec<String>,
+}
+
 pub async fn security_investigate(
     state: &crate::types::AppState,
     input: InvestigationInput,
@@ -41,9 +52,7 @@ pub async fn security_investigate(
         sources,
         output_mode,
     } = input;
-    let _requested_mode = mode.unwrap_or_else(|| "auto".to_string());
-    let _requested_depth = depth.unwrap_or_else(|| "standard".to_string());
-    let _requested_sources = sources.unwrap_or_default();
+    let opts = workflow_options(mode, depth, sources)?;
 
     let target_type = target_type.unwrap_or_else(|| match detect_target_kind(&target) {
         TargetKind::Cve => "cve".to_string(),
@@ -66,6 +75,9 @@ pub async fn security_investigate(
                     include_poc: true,
                     include_mitre: true,
                     include_vendor_advisories: true,
+                    mode: Some(opts.mode),
+                    depth: Some(opts.depth),
+                    sources: Some(opts.sources),
                     output_mode,
                 },
                 auth,
@@ -82,6 +94,9 @@ pub async fn security_investigate(
                     include_passive_dns: true,
                     include_malware: true,
                     include_url_safety: true,
+                    mode: Some(opts.mode),
+                    depth: Some(opts.depth),
+                    sources: Some(opts.sources),
                     output_mode,
                 },
                 auth,
@@ -99,12 +114,14 @@ pub async fn security_investigate_cve(
 ) -> Result<InvestigationResult> {
     let start = std::time::Instant::now();
     validate_cve_id(&input.cve_id)?;
+    let opts = workflow_options(input.mode.clone(), input.depth.clone(), input.sources.clone())?;
 
     let mut findings = Vec::new();
     let mut sources = Vec::new();
     let mut raw = serde_json::Map::new();
+    let (modules, unknowns) = cve_modules(&input, &opts);
 
-    for module in ["lookup_cve", "get_cvss_details", "get_cwe_info"] {
+    for module in modules {
         let run = run_module(
             state,
             module,
@@ -117,85 +134,19 @@ pub async fn security_investigate_cve(
         sources.extend(run.sources);
         raw.insert(module.to_string(), run.raw);
     }
-    if input.include_vendor_advisories {
-        let run = run_module(
-            state,
-            "get_cve_references",
-            &input.cve_id,
-            serde_json::json!({ "cve_id": input.cve_id }),
-            auth,
-        )
-        .await?;
-        findings.extend(run.findings);
-        sources.extend(run.sources);
-        raw.insert("get_cve_references".to_string(), run.raw);
-    }
-
-    if input.include_epss {
-        let run = run_module(
-            state,
-            "get_epss_score",
-            &input.cve_id,
-            serde_json::json!({ "cve_id": input.cve_id }),
-            auth,
-        )
-        .await?;
-        findings.extend(run.findings);
-        sources.extend(run.sources);
-        raw.insert("get_epss_score".to_string(), run.raw);
-    }
-    if input.include_kev {
-        let run = run_module(
-            state,
-            "check_kev_status",
-            &input.cve_id,
-            serde_json::json!({ "cve_id": input.cve_id }),
-            auth,
-        )
-        .await?;
-        findings.extend(run.findings);
-        sources.extend(run.sources);
-        raw.insert("check_kev_status".to_string(), run.raw);
-    }
-    if input.include_poc {
-        let run = run_module(
-            state,
-            "check_poc_availability",
-            &input.cve_id,
-            serde_json::json!({ "cve_id": input.cve_id }),
-            auth,
-        )
-        .await?;
-        findings.extend(run.findings);
-        sources.extend(run.sources);
-        raw.insert("check_poc_availability".to_string(), run.raw);
-    }
-    if input.include_mitre {
-        let run = run_module(
-            state,
-            "get_mitre_techniques",
-            &input.cve_id,
-            serde_json::json!({ "cve_id": input.cve_id }),
-            auth,
-        )
-        .await?;
-        findings.extend(run.findings);
-        sources.extend(run.sources);
-        raw.insert("get_mitre_techniques".to_string(), run.raw);
-    }
 
     let risk = calculate_risk_from_findings(&findings);
     let output_mode = OutputMode::from_str(input.output_mode.as_deref());
     let result = InvestigationResult {
         target: input.cve_id.clone(),
         target_type: "cve".to_string(),
-        mode: "cve_investigation".to_string(),
+        mode: format!("cve_investigation:{}:{}", opts.mode, opts.depth),
         risk,
         summary: format!("{} findings for {}", findings.len(), input.cve_id),
         findings,
         sources,
         raw: Value::Object(raw),
-        unknowns: vec![],
+        unknowns,
         rate_limit_summary: None,
     };
 
@@ -218,6 +169,7 @@ pub async fn security_investigate_indicator(
     input: IndicatorInvestigationInput,
     auth: &AuthIdentity,
 ) -> Result<InvestigationResult> {
+    let opts = workflow_options(input.mode.clone(), input.depth.clone(), input.sources.clone())?;
     let indicator_type = input.indicator_type.clone().unwrap_or_else(|| {
         match detect_target_kind(&input.indicator) {
             TargetKind::Ip => "ip".to_string(),
@@ -239,60 +191,7 @@ pub async fn security_investigate_indicator(
     let mut findings = Vec::new();
     let mut sources = Vec::new();
     let mut raw = serde_json::Map::new();
-
-    let modules = match indicator_type.as_str() {
-        "ip" => {
-            let mut m = vec!["check_ip_noise", "shodan_host_lookup", "asn_lookup"];
-            if input.include_reputation {
-                m.insert(0, "lookup_ip_reputation");
-            }
-            if input.include_passive_dns {
-                m.push("passive_dns_lookup");
-            }
-            if input.include_malware {
-                m.push("search_iocs");
-                m.push("check_ransomware");
-            }
-            m
-        }
-        "domain" => {
-            let mut m = vec![
-                "dns_records_lookup",
-                "rdap_lookup",
-                "domain_subdomain_enum",
-                "tls_certificate_lookup",
-                "technology_fingerprint",
-                "cloud_hosting_hint",
-            ];
-            if input.include_passive_dns {
-                m.push("passive_dns_lookup");
-            }
-            if input.include_malware {
-                m.push("search_iocs");
-                m.push("check_ransomware");
-            }
-            m
-        }
-        "url" => {
-            let mut m = vec![
-                "http_headers_lookup",
-                "technology_fingerprint",
-                "cloud_hosting_hint",
-            ];
-            if input.include_url_safety {
-                m.push("urlscan_check");
-            }
-            m
-        }
-        "hash" => {
-            let mut m = vec!["virustotal_lookup"];
-            if input.include_malware {
-                m.push("search_malware");
-            }
-            m
-        }
-        _ => bail!("unsupported indicator type"),
-    };
+    let (modules, unknowns) = indicator_modules(&input, &indicator_type, &opts)?;
 
     for module in modules {
         let run = run_module(
@@ -313,7 +212,7 @@ pub async fn security_investigate_indicator(
     let result = InvestigationResult {
         target: input.indicator.clone(),
         target_type: indicator_type.clone(),
-        mode: "indicator_investigation".to_string(),
+        mode: format!("indicator_investigation:{}:{}", opts.mode, opts.depth),
         risk,
         summary: format!(
             "{indicator_type} investigation produced {} findings",
@@ -322,7 +221,7 @@ pub async fn security_investigate_indicator(
         findings,
         sources,
         raw: Value::Object(raw),
-        unknowns: vec![],
+        unknowns,
         rate_limit_summary: None,
     };
 
@@ -536,17 +435,26 @@ async fn run_module(
         });
     }
 
+    let window = Utc::now().to_rfc3339();
     let run = match execute_module(state, module_id, target, args.clone()).await {
         Ok(run) => {
             let _ = state.db.source_mark_success(module_id).await;
+            let _ = state
+                .db
+                .source_usage_record(module_id, &window, 1, 1, 0, 0, 0)
+                .await;
             run
         }
         Err(err) => {
+            let err_text = err.to_string();
+            let timeout_count = i64::from(err_text.to_ascii_lowercase().contains("timeout"));
+            let rate_limit_count = i64::from(err_text.to_ascii_lowercase().contains("rate limit"));
+            let _ = state.db.source_mark_error(module_id, &err_text).await;
             let _ = state
                 .db
-                .source_mark_error(module_id, &err.to_string())
+                .source_usage_record(module_id, &window, 1, 0, 1, timeout_count, rate_limit_count)
                 .await;
-            source_error(module_id, &err.to_string())
+            source_error(module_id, &err_text)
         }
     };
     let ttl = state
@@ -608,5 +516,256 @@ async fn execute_module(
         "pulsedive_lookup" => pulsedive_lookup(state, target).await,
         "hybrid_analysis_lookup" => hybrid_analysis_lookup(state, target).await,
         _ => bail!("unsupported module"),
+    }
+}
+
+fn workflow_options(
+    mode: Option<String>,
+    depth: Option<String>,
+    sources: Option<Vec<String>>,
+) -> Result<WorkflowOptions> {
+    let mode = mode.unwrap_or_else(|| "auto".to_string()).to_ascii_lowercase();
+    if !matches!(
+        mode.as_str(),
+        "auto" | "passive_only" | "active_http_headers" | "threat_intel"
+    ) {
+        bail!("unsupported mode: {mode}")
+    }
+
+    let depth = depth
+        .unwrap_or_else(|| "standard".to_string())
+        .to_ascii_lowercase();
+    if !matches!(depth.as_str(), "quick" | "standard" | "deep") {
+        bail!("unsupported depth: {depth}")
+    }
+
+    let mut sources = sources.unwrap_or_default();
+    sources = sources
+        .into_iter()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    sources.sort();
+    sources.dedup();
+
+    Ok(WorkflowOptions {
+        mode,
+        depth,
+        sources,
+    })
+}
+
+fn cve_modules(input: &CveInvestigationInput, opts: &WorkflowOptions) -> (Vec<&'static str>, Vec<String>) {
+    let mut modules = vec!["lookup_cve", "get_cvss_details", "get_cwe_info"];
+    if input.include_vendor_advisories && opts.depth != "quick" {
+        modules.push("get_cve_references");
+    }
+    if input.include_epss {
+        modules.push("get_epss_score");
+    }
+    if input.include_kev {
+        modules.push("check_kev_status");
+    }
+    if input.include_poc && opts.depth != "quick" {
+        modules.push("check_poc_availability");
+    }
+    if input.include_mitre && opts.depth == "deep" {
+        modules.push("get_mitre_techniques");
+    }
+    filter_modules(modules, &opts.sources)
+}
+
+fn indicator_modules(
+    input: &IndicatorInvestigationInput,
+    indicator_type: &str,
+    opts: &WorkflowOptions,
+) -> Result<(Vec<&'static str>, Vec<String>)> {
+    let mut modules = match indicator_type {
+        "ip" => {
+            let mut m = vec!["check_ip_noise", "shodan_host_lookup", "asn_lookup"];
+            if input.include_reputation {
+                m.insert(0, "lookup_ip_reputation");
+            }
+            if input.include_passive_dns {
+                m.push("passive_dns_lookup");
+            }
+            if input.include_malware {
+                m.push("search_iocs");
+                m.push("check_ransomware");
+            }
+            m
+        }
+        "domain" => {
+            let mut m = vec![
+                "dns_records_lookup",
+                "rdap_lookup",
+                "domain_subdomain_enum",
+                "tls_certificate_lookup",
+                "technology_fingerprint",
+                "cloud_hosting_hint",
+            ];
+            if input.include_passive_dns {
+                m.push("passive_dns_lookup");
+            }
+            if input.include_malware {
+                m.push("search_iocs");
+                m.push("check_ransomware");
+            }
+            m
+        }
+        "url" => {
+            let mut m = vec![
+                "http_headers_lookup",
+                "technology_fingerprint",
+                "cloud_hosting_hint",
+            ];
+            if input.include_url_safety {
+                m.push("urlscan_check");
+            }
+            m
+        }
+        "hash" => {
+            let mut m = vec!["virustotal_lookup"];
+            if input.include_malware {
+                m.push("search_malware");
+            }
+            m
+        }
+        _ => bail!("unsupported indicator type"),
+    };
+
+    match opts.mode.as_str() {
+        "passive_only" => modules.retain(|m| *m != "http_headers_lookup"),
+        "active_http_headers" => {
+            modules = match indicator_type {
+                "domain" | "url" => vec![
+                    "http_headers_lookup",
+                    "technology_fingerprint",
+                    "cloud_hosting_hint",
+                ],
+                _ => bail!("active_http_headers mode only supports domain or url indicators"),
+            }
+        }
+        "threat_intel" => modules.retain(|m| {
+            matches!(
+                *m,
+                "lookup_ip_reputation"
+                    | "check_ip_noise"
+                    | "shodan_host_lookup"
+                    | "virustotal_lookup"
+                    | "urlscan_check"
+                    | "search_malware"
+                    | "search_iocs"
+                    | "check_ransomware"
+            )
+        }),
+        "auto" => {}
+        _ => unreachable!(),
+    }
+
+    if opts.depth == "quick" && opts.sources.is_empty() && modules.len() > 3 {
+        modules.truncate(3);
+    }
+    if opts.depth == "deep" {
+        match indicator_type {
+            "ip" | "domain" | "url" | "hash" => {
+                modules.extend([
+                    "otx_lookup",
+                    "misp_lookup",
+                    "pulsedive_lookup",
+                    "hybrid_analysis_lookup",
+                ]);
+            }
+            _ => {}
+        }
+        if indicator_type == "ip" {
+            modules.push("censys_lookup");
+        }
+    }
+
+    modules.sort_unstable();
+    modules.dedup();
+    Ok(filter_modules(modules, &opts.sources))
+}
+
+fn filter_modules(modules: Vec<&'static str>, requested: &[String]) -> (Vec<&'static str>, Vec<String>) {
+    if requested.is_empty() {
+        return (modules, vec![]);
+    }
+
+    let requested_set = requested.iter().cloned().collect::<BTreeSet<_>>();
+    let mut matched = BTreeSet::new();
+    let filtered = modules
+        .into_iter()
+        .filter(|module| {
+            let names = module_match_names(module);
+            let is_match = names.iter().any(|name| requested_set.contains(*name));
+            if is_match {
+                for name in names {
+                    if requested_set.contains(name) {
+                        matched.insert(name.to_string());
+                    }
+                }
+            }
+            is_match
+        })
+        .collect::<Vec<_>>();
+
+    let unknowns = requested_set
+        .difference(&matched)
+        .map(|s| format!("requested source or module not used: {s}"))
+        .collect::<Vec<_>>();
+    (filtered, unknowns)
+}
+
+fn module_match_names(module: &str) -> Vec<&'static str> {
+    match module {
+        "lookup_cve" | "get_cvss_details" | "get_cwe_info" | "get_cve_references" => {
+            vec![module, "nvd"]
+        }
+        "get_epss_score" => vec![module, "epss"],
+        "check_kev_status" => vec![module, "kev", "cisa_kev"],
+        "check_poc_availability" => vec![module, "poc"],
+        "get_mitre_techniques" => vec![module, "mitre"],
+        "lookup_ip_reputation" => vec![module, "abuseipdb", "reputation"],
+        "check_ip_noise" => vec![module, "greynoise"],
+        "shodan_host_lookup" => vec![module, "shodan"],
+        "passive_dns_lookup" => vec![module, "circl_passive_dns", "passive_dns"],
+        "asn_lookup" | "rdap_lookup" => vec![module, "rdap"],
+        "dns_records_lookup" => vec![module, "dns", "dns_over_https"],
+        "domain_subdomain_enum" | "tls_certificate_lookup" => vec![module, "crtsh", "certificate_transparency"],
+        "http_headers_lookup" => vec![module, "http", "headers"],
+        "technology_fingerprint" | "cloud_hosting_hint" => vec![module, "heuristic"],
+        "virustotal_lookup" => vec![module, "virustotal"],
+        "urlscan_check" => vec![module, "urlscan"],
+        "search_malware" => vec![module, "malwarebazaar"],
+        "search_iocs" => vec![module, "threatfox"],
+        "check_ransomware" => vec![module, "ransomwhere"],
+        "censys_lookup" => vec![module, "censys"],
+        "otx_lookup" => vec![module, "otx"],
+        "misp_lookup" => vec![module, "misp"],
+        "pulsedive_lookup" => vec![module, "pulsedive"],
+        "hybrid_analysis_lookup" => vec![module, "hybrid_analysis"],
+        _ => vec!["unknown"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn source_filter_accepts_source_aliases() {
+        let (modules, unknowns) = filter_modules(
+            vec!["lookup_cve", "get_epss_score", "check_kev_status"],
+            &["epss".to_string()],
+        );
+        assert_eq!(modules, vec!["get_epss_score"]);
+        assert!(unknowns.is_empty());
+    }
+
+    #[test]
+    fn unsupported_mode_rejected() {
+        assert!(workflow_options(Some("exploit".to_string()), None, None).is_err());
     }
 }
